@@ -81,7 +81,8 @@ export default function Home() {
         }
         if (event.type === "variant_done") {
           const d = event.data as { variantId: string; avgScore: number };
-          setState((s) => ({ ...s, stageLabel: `Variant ${d.variantId} done` }));
+          const label = d.variantId === "variant-2" ? "B" : "A";
+          setState((s) => ({ ...s, stageLabel: `Variant ${label} done` }));
         }
         if (event.type === "reactions") {
           const d = event.data as { variantId: string; reactions: Reaction[] };
@@ -153,6 +154,14 @@ export default function Home() {
             bAngle={bAngle}
             bError={bError}
             onGenerateB={generateB}
+            onLoadExample={() => {
+              setCopyA(
+                "We just shipped the fastest onboarding in SaaS — new users go from signup to first win in 4 minutes. 127 beta teams onboarded themselves this month, no calls, no setup. Try it free.",
+              );
+              setUseB(false);
+              setCopyB("");
+              setBAngle("");
+            }}
             onBack={() => setStep("audience")}
             onRun={run}
           />
@@ -262,6 +271,7 @@ function CopyEditor({
   bAngle,
   bError,
   onGenerateB,
+  onLoadExample,
   onBack,
   onRun,
 }: {
@@ -276,17 +286,28 @@ function CopyEditor({
   bAngle: string;
   bError: string;
   onGenerateB: () => void;
+  onLoadExample: () => void;
   onBack: () => void;
   onRun: () => void;
 }) {
   return (
     <div>
-      <h1 className="text-4xl font-semibold tracking-tight text-balance">
-        Write your launch copy.
-      </h1>
-      <p className="mt-3 text-ink-2">
-        Paste the post or announcement. Add a second variant to A/B test against the same audience.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-4xl font-semibold tracking-tight text-balance">
+            Write your launch copy.
+          </h1>
+          <p className="mt-3 text-ink-2">
+            Paste the post or announcement. Add a second variant to A/B test against the same audience.
+          </p>
+        </div>
+        <button
+          onClick={onLoadExample}
+          className="shrink-0 rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
+        >
+          Load example
+        </button>
+      </div>
       <div className="mt-8 grid gap-4">
         <label className="block">
           <span className="text-sm font-medium text-ink-1">Variant A</span>
@@ -370,6 +391,8 @@ function SimulationView({
   hasB: boolean;
 }) {
   const total = state.variantA.length + state.variantB.length;
+  const engA = sumEngagement(state.variantA.map(engagementFromReaction));
+  const engB = sumEngagement(state.variantB.map(engagementFromReaction));
   return (
     <div>
       <h1 className="text-4xl font-semibold tracking-tight text-balance">
@@ -385,8 +408,18 @@ function SimulationView({
         <p className="mt-4 rounded-xl bg-pink-1/10 p-4 text-sm text-pink-1">{state.error}</p>
       )}
       <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <EngagementTicker label="Variant A" reactions={state.variantA} />
-        {hasB && <EngagementTicker label="Variant B" reactions={state.variantB} />}
+        <EngagementTicker
+          label="Variant A"
+          reactions={state.variantA}
+          leading={hasB ? engA.likes >= engB.likes : true}
+        />
+        {hasB && (
+          <EngagementTicker
+            label="Variant B"
+            reactions={state.variantB}
+            leading={engB.likes > engA.likes}
+          />
+        )}
       </div>
       <div className="mt-8 flex items-center gap-2 text-sm text-ink-2">
         <span className="h-2 w-2 rounded-full bg-blue-1 pulse-dot" />
@@ -407,9 +440,11 @@ function SimulationView({
 function EngagementTicker({
   label,
   reactions,
+  leading,
 }: {
   label: string;
   reactions: Reaction[];
+  leading: boolean;
 }) {
   const e = useMemo(
     () => sumEngagement(reactions.map(engagementFromReaction)),
@@ -422,9 +457,18 @@ function EngagementTicker({
     { label: "Impressions", value: e.impressions },
   ];
   return (
-    <div className="rounded-2xl border border-line bg-paper p-4">
+    <div
+      className={`rounded-2xl border p-4 ${
+        leading ? "border-blue-1/40 bg-blue-1/5" : "border-line bg-paper"
+      }`}
+    >
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">{label}</span>
+        {leading && (
+          <span className="rounded-full bg-blue-1/15 px-2.5 py-0.5 text-[11px] font-semibold text-blue-1">
+            Leading
+          </span>
+        )}
         <span className="text-xs text-ink-3">{reactions.length} reactions</span>
       </div>
       <div className="mt-3 grid grid-cols-4 gap-2 text-center">
@@ -588,13 +632,37 @@ function ResultsView({ state, onRerun }: { state: SimState; onRerun: () => void 
 
       {state.rewrite && (
         <div className="mt-6 fade-up rounded-2xl border border-blue-1/40 bg-blue-1/5 p-6">
-          <div className="text-xs font-semibold text-blue-1 uppercase tracking-wide">
-            Recommended rewrite
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold text-blue-1 uppercase tracking-wide">
+              Recommended rewrite
+            </div>
+            <CopyButton text={state.rewrite.rewrite} />
           </div>
           <p className="mt-3 text-lg leading-relaxed">{state.rewrite.rewrite}</p>
           <p className="mt-3 text-sm text-ink-2">{state.rewrite.why}</p>
         </div>
       )}
     </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+  return (
+    <button
+      onClick={copy}
+      className="shrink-0 rounded-full border border-blue-1/40 px-4 py-1.5 text-xs font-medium text-blue-1 hover:bg-blue-1/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
   );
 }
