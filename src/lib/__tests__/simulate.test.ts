@@ -26,7 +26,7 @@ function fakeReaction(p: { id: string; name: string; handle: string; segment: st
 
 describe("simulateVariant", () => {
   it("calls the LLM once per 10-profile batch and returns all reactions", async () => {
-    vi.mocked(completeJSON).mockImplementation(async (_opts, _validate) =>
+    vi.mocked(completeJSON).mockImplementation(async () =>
       audience.profiles.slice(0, 10).map((p) => fakeReaction(p)),
     );
 
