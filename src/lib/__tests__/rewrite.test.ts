@@ -23,6 +23,7 @@ const variants: VariantResult[] = [
     avgScore: 60,
     objectionClusters: [],
     segmentScores: [],
+    engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 },
   },
   {
     variantId: "v2",
@@ -31,6 +32,7 @@ const variants: VariantResult[] = [
     avgScore: 82,
     objectionClusters: [],
     segmentScores: [],
+    engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 },
   },
 ];
 

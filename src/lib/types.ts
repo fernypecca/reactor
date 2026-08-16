@@ -36,6 +36,8 @@ export type ObjectionCluster = {
   examples: string[];
 };
 
+import type { Engagement } from "./engagement";
+
 export type VariantResult = {
   variantId: string;
   copy: string;
@@ -43,6 +45,7 @@ export type VariantResult = {
   avgScore: number;
   objectionClusters: ObjectionCluster[];
   segmentScores: { segment: string; avg: number }[];
+  engagement: Engagement;
 };
 
 export type SimulationResult = {

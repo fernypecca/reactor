@@ -37,14 +37,14 @@ describe("aggregate", () => {
   it("pickBestVariant returns highest avg, ties to first", () => {
     expect(
       pickBestVariant([
-        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
-        { variantId: "v2", copy: "", reactions, avgScore: 70, objectionClusters: [], segmentScores: [] },
+        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [], engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 } },
+        { variantId: "v2", copy: "", reactions, avgScore: 70, objectionClusters: [], segmentScores: [], engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 } },
       ]),
     ).toBe("v2");
     expect(
       pickBestVariant([
-        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
-        { variantId: "v2", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
+        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [], engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 } },
+        { variantId: "v2", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [], engagement: { likes: 0, replies: 0, reposts: 0, impressions: 0 } },
       ]),
     ).toBe("v1");
   });
@@ -56,5 +56,6 @@ describe("aggregate", () => {
     expect(v.avgScore).toBe(55);
     expect(v.objectionClusters.length).toBeGreaterThan(0);
     expect(v.segmentScores.length).toBe(2);
+    expect(v.engagement.likes).toBeGreaterThan(0);
   });
 });

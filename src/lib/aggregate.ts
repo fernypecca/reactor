@@ -3,6 +3,7 @@ import type {
   Reaction,
   VariantResult,
 } from "./types";
+import { engagementFromReaction, sumEngagement } from "./engagement";
 
 export function avgScore(reactions: Reaction[]): number {
   if (reactions.length === 0) return 0;
@@ -64,6 +65,7 @@ export function buildVariantResult(
     avgScore: avgScore(reactions),
     objectionClusters: objectionClusters(reactions),
     segmentScores: segmentScores(reactions),
+    engagement: sumEngagement(reactions.map(engagementFromReaction)),
   };
 }
 
