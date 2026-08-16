@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/llm", () => ({
   complete: vi.fn(),
-  completeJSON: vi.fn(),
+  completeJSON: vi.fn((opts, validate) => {
+    // Simulate completeJSON calling complete() then validating
+    const raw = { rewrite: "", why: "x" }; // simulated LLM response
+    if (validate(raw)) return Promise.resolve(raw);
+    // After 3 attempts, throw
+    return Promise.reject(new Error("schema mismatch"));
+  }),
 }));
 
 import { rewriteVariant } from "@/lib/rewrite";
@@ -42,6 +48,19 @@ describe("rewriteVariant", () => {
 
   it("falls back to the best variant copy on LLM failure", async () => {
     vi.mocked(completeJSON).mockRejectedValue(new Error("boom"));
+    const out = await rewriteVariant(variants);
+    expect(out.rewrite).toBe(variants[1].copy);
+    expect(out.why.length).toBeGreaterThan(0);
+  });
+
+  it("returns empty result when variants array is empty", async () => {
+    vi.mocked(completeJSON).mockResolvedValue({ rewrite: "x", why: "y" });
+    const out = await rewriteVariant([]);
+    expect(out).toEqual({ rewrite: "", why: "No variants to rewrite." });
+  });
+
+  it("treats empty rewrite string as invalid and falls back to best variant", async () => {
+    vi.mocked(completeJSON).mockResolvedValue({ rewrite: "", why: "x" });
     const out = await rewriteVariant(variants);
     expect(out.rewrite).toBe(variants[1].copy);
     expect(out.why.length).toBeGreaterThan(0);

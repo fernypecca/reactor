@@ -6,7 +6,12 @@ type RewritePayload = { rewrite: string; why: string };
 
 function isRewritePayload(v: unknown): v is RewritePayload {
   const o = v as Partial<RewritePayload> | null;
-  return !!o && typeof o.rewrite === "string" && typeof o.why === "string";
+  return (
+    !!o &&
+    typeof o.rewrite === "string" &&
+    o.rewrite.trim().length > 0 &&
+    typeof o.why === "string"
+  );
 }
 
 const REWRITE_SYSTEM = `You are a conversion copywriter. Given two variants of a launch post and how a simulated audience reacted to each, write ONE improved version that keeps the best elements and neutralizes the top objection. Keep the creator's voice. No hype words. No placeholders.
@@ -15,6 +20,10 @@ Respond with ONLY valid JSON: {"rewrite": string, "why": string}`;
 export async function rewriteVariant(
   variants: VariantResult[],
 ): Promise<{ rewrite: string; why: string }> {
+  if (variants.length === 0) {
+    return { rewrite: "", why: "No variants to rewrite." };
+  }
+
   const best = pickBestVariant(variants);
   const bestVariant = variants.find((v) => v.variantId === best) ?? variants[0];
   const fallback = {
@@ -34,12 +43,12 @@ export async function rewriteVariant(
     .join("\n\n");
 
   try {
-    return (
-      (await completeJSON<RewritePayload>(
-        { system: REWRITE_SYSTEM, prompt, tier: "smart", maxTokens: 600 },
-        isRewritePayload,
-      )) ?? fallback
+    const result = await completeJSON<RewritePayload>(
+      { system: REWRITE_SYSTEM, prompt, tier: "smart", maxTokens: 600 },
+      isRewritePayload,
     );
+    if (!isRewritePayload(result)) return fallback;
+    return result ?? fallback;
   } catch (err) {
     console.warn("[rewrite] failed, using best variant:", err);
     return fallback;
