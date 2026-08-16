@@ -288,14 +288,14 @@ function CopyEditor({
       <div className="mt-8 flex items-center gap-3">
         <button
           onClick={onBack}
-          className="rounded-full border border-line px-5 py-2.5 text-sm font-medium"
+          className="rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
         >
           Back
         </button>
         <button
           onClick={onRun}
           disabled={!canRun}
-          className="rounded-full bg-blue-1 px-6 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
+          className="rounded-full bg-blue-1 px-6 py-2.5 text-sm font-semibold text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1 focus-visible:ring-offset-2"
         >
           Simulate my launch
         </button>
@@ -380,7 +380,7 @@ function ResultsView({ state, onRerun }: { state: SimState; onRerun: () => void 
         </h1>
         <button
           onClick={onRerun}
-          className="shrink-0 rounded-full border border-line px-5 py-2.5 text-sm font-medium"
+          className="shrink-0 rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
         >
           Edit copy
         </button>
