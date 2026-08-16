@@ -3,6 +3,16 @@ export type StreamEvent = {
   data: unknown;
 };
 
+export async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export async function readNdjson(
   res: Response,
   onEvent: (event: StreamEvent) => void,
