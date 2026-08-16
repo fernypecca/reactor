@@ -23,6 +23,8 @@ function isReactionPayload(v: unknown): v is ReactionPayload[] {
   );
 }
 
+const escapePrompt = (s: string) => s.replace(/[\\`"]/g, (c) => `\\${c}`);
+
 const SIM_SYSTEM = `You are a realistic social-media simulator. A creator is about to launch copy to their audience of followers.
 For each follower you are given their bio, interests, tone, engagement style and a typical objection. Reply AS that follower, in their voice, in one line or two.
 Rules:
@@ -51,9 +53,11 @@ export async function simulateVariant(
           prompt: `CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
             .map(
               (p) =>
-                `- ${p.handle} (${p.name}) | bio: ${p.bio} | interests: ${p.interests.join(
-                  ", ",
-                )} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${p.objection} | segment: ${p.segment}`,
+                `- ${escapePrompt(p.handle)} (${escapePrompt(p.name)}) | bio: ${escapePrompt(
+                  p.bio,
+                )} | interests: ${escapePrompt(p.interests.join(", "))} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${escapePrompt(
+                  p.objection,
+                )} | segment: ${escapePrompt(p.segment)}`,
             )
             .join("\n")}\n\nReply with one reaction object per follower.`,
           tier: "fast",
@@ -80,8 +84,10 @@ export async function simulateVariant(
         ];
       });
 
-      if (reactions.length !== batch.length) {
-        throw new Error("LLM omitted or duplicated followers");
+      const covered = new Set(reactions.map((r) => r.followerId));
+      const missingCount = batch.filter((p) => !covered.has(p.id)).length;
+      if (missingCount > 0) {
+        throw new Error(`LLM omitted ${missingCount} follower(s) from this batch`);
       }
     } catch (err) {
       console.warn("[simulate] batch failed, falling back:", err);
