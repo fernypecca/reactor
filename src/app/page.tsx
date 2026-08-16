@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { AUDIENCES } from "@/lib/audiences";
-import { readNdjson } from "@/lib/client-utils";
+import { postJson, readNdjson } from "@/lib/client-utils";
+import { engagementFromReaction, sumEngagement } from "@/lib/engagement";
 import type {
   Audience,
   Reaction,
@@ -34,12 +35,33 @@ export default function Home() {
   const [copyA, setCopyA] = useState("");
   const [copyB, setCopyB] = useState("");
   const [useB, setUseB] = useState(false);
+  const [generatingB, setGeneratingB] = useState(false);
+  const [bAngle, setBAngle] = useState("");
+  const [bError, setBError] = useState("");
   const [state, setState] = useState<SimState>(IDLE);
 
   const variants = useMemo(
     () => (useB && copyB.trim() ? [copyA, copyB] : [copyA]),
     [copyA, copyB, useB],
   );
+
+  async function generateB() {
+    if (!copyA.trim() || generatingB) return;
+    setGeneratingB(true);
+    setBError("");
+    try {
+      const res = await postJson<{ variant: string; angle: string }>("/api/generate-variant", {
+        copy: copyA,
+      });
+      setCopyB(res.variant);
+      setBAngle(res.angle);
+      setUseB(true);
+    } catch (err) {
+      setBError(err instanceof Error ? err.message : "Could not generate variant B");
+    } finally {
+      setGeneratingB(false);
+    }
+  }
 
   async function run() {
     if (!audience) return;
@@ -127,13 +149,21 @@ export default function Home() {
             useB={useB}
             setUseB={setUseB}
             canRun={copyA.trim().length > 0}
+            generatingB={generatingB}
+            bAngle={bAngle}
+            bError={bError}
+            onGenerateB={generateB}
             onBack={() => setStep("audience")}
             onRun={run}
           />
         )}
 
         {step === "simulate" && (
-          <SimulationView state={state} audienceName={audience?.name ?? ""} />
+          <SimulationView
+            state={state}
+            audienceName={audience?.name ?? ""}
+            hasB={variants.length === 2}
+          />
         )}
 
         {step === "results" && state.result && (
@@ -228,6 +258,10 @@ function CopyEditor({
   useB,
   setUseB,
   canRun,
+  generatingB,
+  bAngle,
+  bError,
+  onGenerateB,
   onBack,
   onRun,
 }: {
@@ -238,6 +272,10 @@ function CopyEditor({
   useB: boolean;
   setUseB: (v: boolean) => void;
   canRun: boolean;
+  generatingB: boolean;
+  bAngle: string;
+  bError: string;
+  onGenerateB: () => void;
   onBack: () => void;
   onRun: () => void;
 }) {
@@ -270,6 +308,24 @@ function CopyEditor({
           />
           Add variant B for A/B testing
         </label>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onGenerateB}
+            disabled={generatingB || !copyA.trim()}
+            className="rounded-full border border-line px-5 py-2.5 text-sm font-medium disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
+          >
+            {generatingB
+              ? "Generating…"
+              : useB && copyB.trim()
+                ? "Regenerate variant B"
+                : "Generate variant B"}
+          </button>
+          {bAngle && <span className="text-xs text-ink-3">Angle: {bAngle}</span>}
+        </div>
+        {bError && (
+          <p className="mt-3 rounded-xl bg-pink-1/10 p-3 text-sm text-pink-1">{bError}</p>
+        )}
 
         {useB && (
           <label className="block fade-up">
@@ -304,7 +360,15 @@ function CopyEditor({
   );
 }
 
-function SimulationView({ state, audienceName }: { state: SimState; audienceName: string }) {
+function SimulationView({
+  state,
+  audienceName,
+  hasB,
+}: {
+  state: SimState;
+  audienceName: string;
+  hasB: boolean;
+}) {
   const total = state.variantA.length + state.variantB.length;
   return (
     <div>
@@ -320,6 +384,10 @@ function SimulationView({ state, audienceName }: { state: SimState; audienceName
       {state.error && (
         <p className="mt-4 rounded-xl bg-pink-1/10 p-4 text-sm text-pink-1">{state.error}</p>
       )}
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
+        <EngagementTicker label="Variant A" reactions={state.variantA} />
+        {hasB && <EngagementTicker label="Variant B" reactions={state.variantB} />}
+      </div>
       <div className="mt-8 flex items-center gap-2 text-sm text-ink-2">
         <span className="h-2 w-2 rounded-full bg-blue-1 pulse-dot" />
         {total} reactions streamed
@@ -330,6 +398,41 @@ function SimulationView({ state, audienceName }: { state: SimState; audienceName
         ))}
         {state.variantB.map((r) => (
           <ReactionCard key={r.followerId} reaction={r} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EngagementTicker({
+  label,
+  reactions,
+}: {
+  label: string;
+  reactions: Reaction[];
+}) {
+  const e = useMemo(
+    () => sumEngagement(reactions.map(engagementFromReaction)),
+    [reactions],
+  );
+  const stats = [
+    { label: "Likes", value: e.likes },
+    { label: "Replies", value: e.replies },
+    { label: "Reposts", value: e.reposts },
+    { label: "Impressions", value: e.impressions },
+  ];
+  return (
+    <div className="rounded-2xl border border-line bg-paper p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">{label}</span>
+        <span className="text-xs text-ink-3">{reactions.length} reactions</span>
+      </div>
+      <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+        {stats.map((s) => (
+          <div key={s.label}>
+            <div className="text-xl font-semibold tabular-nums">{s.value.toLocaleString()}</div>
+            <div className="text-[11px] text-ink-3">{s.label}</div>
+          </div>
         ))}
       </div>
     </div>
@@ -428,23 +531,33 @@ function ResultsView({ state, onRerun }: { state: SimState; onRerun: () => void 
 
             <div className="mt-5">
               <div className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
-                By segment
+                Engagement
               </div>
-              <div className="mt-2 space-y-2">
-                {v.segmentScores.map((s) => (
-                  <div key={s.segment}>
-                    <div className="flex justify-between text-xs text-ink-2">
-                      <span className="capitalize">{s.segment}</span>
-                      <span>{s.avg}</span>
-                    </div>
-                    <div className="mt-1 h-1.5 rounded-full bg-mist-2">
-                      <div
-                        className="progress-fill h-1.5 rounded-full"
-                        style={{ width: `${s.avg}%` }}
-                      />
-                    </div>
+              <div className="mt-2 grid grid-cols-4 gap-2 text-center">
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {v.engagement.likes.toLocaleString()}
                   </div>
-                ))}
+                  <div className="text-[11px] text-ink-3">Likes</div>
+                </div>
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {v.engagement.replies.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-ink-3">Replies</div>
+                </div>
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {v.engagement.reposts.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-ink-3">Reposts</div>
+                </div>
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {v.engagement.impressions.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-ink-3">Impressions</div>
+                </div>
               </div>
             </div>
           </div>
