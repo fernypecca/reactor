@@ -18,12 +18,14 @@ type SimState = {
   result?: SimulationResult;
   rewrite?: { rewrite: string; why: string };
   error?: string;
+  stageLabel: string;
 };
 
 const IDLE: SimState = {
   streaming: false,
   variantA: [],
   variantB: [],
+  stageLabel: "",
 };
 
 export default function Home() {
@@ -42,6 +44,7 @@ export default function Home() {
   async function run() {
     if (!audience) return;
     setState({ ...IDLE, streaming: true });
+    setStep("simulate");
     try {
       const res = await fetch("/api/simulate", {
         method: "POST",
@@ -50,6 +53,14 @@ export default function Home() {
       });
       if (!res.ok) throw new Error("Simulation failed");
       await readNdjson(res, (event) => {
+        if (event.type === "variant_start") {
+          const d = event.data as { variantId: string; copy: string };
+          setState((s) => ({ ...s, stageLabel: d.copy }));
+        }
+        if (event.type === "variant_done") {
+          const d = event.data as { variantId: string; avgScore: number };
+          setState((s) => ({ ...s, stageLabel: `Variant ${d.variantId} done` }));
+        }
         if (event.type === "reactions") {
           const d = event.data as { variantId: string; reactions: Reaction[] };
           setState((s) =>
@@ -303,6 +314,9 @@ function SimulationView({ state, audienceName }: { state: SimState; audienceName
       <p className="mt-3 text-ink-2">
         Clones are reacting to your copy in real time.
       </p>
+      {state.stageLabel && (
+        <p className="mt-2 text-sm text-ink-3">{state.stageLabel}</p>
+      )}
       {state.error && (
         <p className="mt-4 rounded-xl bg-pink-1/10 p-4 text-sm text-pink-1">{state.error}</p>
       )}
