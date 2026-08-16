@@ -68,17 +68,16 @@ export async function POST(req: Request) {
           }),
         );
 
+        const { rewrite, why } = await rewriteVariant(variantResults);
+
         const result: SimulationResult = {
           audienceId: input.audienceId,
           variants: variantResults,
           bestVariantId: pickBestVariant(variantResults),
-          rewrite: "",
+          rewrite,
         };
 
         send("results", result);
-
-        const { rewrite, why } = await rewriteVariant(variantResults);
-        result.rewrite = rewrite;
         send("rewrite", { rewrite, why });
         send("done", { ok: true });
       } catch (err) {
