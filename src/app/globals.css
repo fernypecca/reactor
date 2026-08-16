@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "SF Pro Icons", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+
+  --color-paper: #ffffff;
+  --color-mist: #f5f5f7;
+  --color-mist-2: #ececf0;
+  --color-ink-1: #1d1d1f;
+  --color-ink-2: #6e6e73;
+  --color-ink-3: #86868b;
+  --color-line: #d2d2d7;
+
+  --color-blue-1: #0071e3;
+  --color-blue-2: #2997ff;
+  --color-green-1: #34c759;
+  --color-violet-1: #af52de;
+  --color-pink-1: #ff2d55;
+  --color-orange-1: #ff9500;
+}
+
+html {
+  scrollbar-color: #d2d2d7 transparent;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink-1);
+  font-feature-settings: "ss01", "cv01";
+}
+
+::selection {
+  background: rgba(0, 113, 227, 0.16);
+}
+
+.text-gradient {
+  background: linear-gradient(100deg, #0071e3 0%, #af52de 45%, #ff2d55 90%);
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: gradientShift 7s ease-in-out infinite alternate;
+}
+
+@keyframes gradientShift {
+  to {
+    background-position: 100% center;
+  }
+}
+
+.fade-up {
+  animation: fadeUp 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-mist-2);
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  animation: shimmerMove 1.5s infinite;
+}
+
+@keyframes shimmerMove {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.pulse-dot {
+  animation: pulseDot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+
+.lift {
+  transition:
+    transform 250ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 250ms ease,
+    border-color 250ms ease;
+}
+
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 113, 227, 0.4);
+}
+
+.tab-active {
+  background: var(--color-ink-1);
+  color: #fff;
+}
+
+.progress-fill {
+  background: linear-gradient(90deg, #0071e3, #af52de);
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
