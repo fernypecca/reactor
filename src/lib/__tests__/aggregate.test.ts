@@ -37,14 +37,14 @@ describe("aggregate", () => {
   it("pickBestVariant returns highest avg, ties to first", () => {
     expect(
       pickBestVariant([
-        { variantId: "v1", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
-        { variantId: "v2", reactions, avgScore: 70, objectionClusters: [], segmentScores: [] },
+        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
+        { variantId: "v2", copy: "", reactions, avgScore: 70, objectionClusters: [], segmentScores: [] },
       ]),
     ).toBe("v2");
     expect(
       pickBestVariant([
-        { variantId: "v1", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
-        { variantId: "v2", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
+        { variantId: "v1", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
+        { variantId: "v2", copy: "", reactions, avgScore: 55, objectionClusters: [], segmentScores: [] },
       ]),
     ).toBe("v1");
   });
