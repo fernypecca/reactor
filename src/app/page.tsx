@@ -299,16 +299,6 @@ function CopyEditor({
           />
         </label>
 
-        <label className="flex items-center gap-2 text-sm font-medium text-ink-1">
-          <input
-            type="checkbox"
-            checked={useB}
-            onChange={(e) => setUseB(e.target.checked)}
-            className="h-4 w-4 rounded"
-          />
-          Add variant B for A/B testing
-        </label>
-
         <div className="flex items-center gap-3">
           <button
             onClick={onGenerateB}
@@ -326,6 +316,16 @@ function CopyEditor({
         {bError && (
           <p className="mt-3 rounded-xl bg-pink-1/10 p-3 text-sm text-pink-1">{bError}</p>
         )}
+
+        <label className="flex items-center gap-2 text-sm font-medium text-ink-1">
+          <input
+            type="checkbox"
+            checked={useB}
+            onChange={(e) => setUseB(e.target.checked)}
+            className="h-4 w-4 rounded"
+          />
+          Add variant B for A/B testing
+        </label>
 
         {useB && (
           <label className="block fade-up">
@@ -527,6 +527,28 @@ function ResultsView({ state, onRerun }: { state: SimState; onRerun: () => void 
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="mt-5">
+              <div className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
+                By segment
+              </div>
+              <div className="mt-2 space-y-2">
+                {v.segmentScores.map((s) => (
+                  <div key={s.segment}>
+                    <div className="flex justify-between text-xs text-ink-2">
+                      <span className="capitalize">{s.segment}</span>
+                      <span>{s.avg}</span>
+                    </div>
+                    <div className="mt-1 h-1.5 rounded-full bg-mist-2">
+                      <div
+                        className="progress-fill h-1.5 rounded-full"
+                        style={{ width: `${s.avg}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="mt-5">
