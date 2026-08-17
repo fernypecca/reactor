@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { pickExample } from "@/lib/examples";
 import type { Audience } from "@/lib/types";
 import { VARIANT_COLOR } from "./Viz";
-
-const EXAMPLE =
-  "We just shipped the fastest onboarding in SaaS — new users go from signup to first win in 4 minutes. 127 beta teams onboarded themselves this month, no calls, no setup. Try it free.";
 
 type Props = {
   audiences: Audience[];
@@ -154,13 +152,14 @@ export default function Composer({
           <button
             type="button"
             onClick={() => {
-              setCopyA(EXAMPLE);
+              // randomised in the handler, never during render
+              setCopyA(pickExample(copyA));
               setUseB(false);
               setCopyB("");
             }}
             className="text-[12px] font-medium text-blue-1 hover:underline"
           >
-            Use an example
+            {copyA.trim() ? "Try another example" : "Use an example"}
           </button>
         </div>
 
