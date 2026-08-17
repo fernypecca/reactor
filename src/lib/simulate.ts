@@ -34,6 +34,8 @@ Rules:
 - objection is a one-line concern from the follower's point of view, or "" if the follower would engage without raising one.
 - Never invent facts about the product. Never use "amazing" or "game-changing".
 - If PRODUCT CONTEXT is given, treat it as what this follower already knows. Objections must engage with those specifics — the real price, the real audience — never ask for something the context already answers.
+- followerId MUST be copied verbatim from the "id:" field of that follower. Do not invent it, do not use the handle.
+- Return exactly one object per follower given, and never skip one.
 Respond with ONLY valid JSON: an array of {"followerId": string, "score": number, "comment": string, "objection": string}`;
 
 export async function simulateVariant(
@@ -63,9 +65,11 @@ export async function simulateVariant(
           prompt: `${contextBlock}${goalBlock}CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
             .map(
               (p) =>
-                `- ${escapePrompt(p.handle)} (${escapePrompt(p.name)}) | bio: ${escapePrompt(
-                  p.bio,
-                )} | interests: ${escapePrompt(p.interests.join(", "))} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${escapePrompt(
+                `- id: ${escapePrompt(p.id)} | ${escapePrompt(p.handle)} (${escapePrompt(
+                  p.name,
+                )}) | bio: ${escapePrompt(p.bio)} | interests: ${escapePrompt(
+                  p.interests.join(", "),
+                )} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${escapePrompt(
                   p.objection,
                 )} | segment: ${escapePrompt(p.segment)}`,
             )
@@ -76,14 +80,19 @@ export async function simulateVariant(
         isReactionPayload,
       );
 
+      // Match on the id we asked for, but accept the handle too: a model that
+      // answers with @name instead of the id is still a usable answer, and
+      // dropping it silently sends the whole batch to the fallback.
       const byId = new Map(batch.map((p) => [p.id, p]));
+      const byHandle = new Map(batch.map((p) => [p.handle.toLowerCase(), p]));
       reactions = payload.flatMap((r) => {
-        const profile = byId.get(r.followerId);
-        if (!profile || seen.has(r.followerId)) return [];
-        seen.add(r.followerId);
+        const key = String(r.followerId ?? "").trim();
+        const profile = byId.get(key) ?? byHandle.get(key.toLowerCase());
+        if (!profile || seen.has(profile.id)) return [];
+        seen.add(profile.id);
         return [
           {
-            followerId: r.followerId,
+            followerId: profile.id,
             name: profile.name,
             handle: profile.handle,
             segment: profile.segment,
