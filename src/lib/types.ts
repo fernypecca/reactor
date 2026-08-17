@@ -48,6 +48,17 @@ export type VariantResult = {
   engagement: Engagement;
 };
 
+/**
+ * `source` tells the UI whether this is a real rewrite or just the winning
+ * copy handed back because no model was available. Presenting the second one
+ * as a rewrite would be a lie in the most important card on the page.
+ */
+export type RewriteResult = {
+  rewrite: string;
+  why: string;
+  source: "llm" | "fallback";
+};
+
 export type SimulationResult = {
   audienceId: string;
   variants: VariantResult[];

@@ -28,6 +28,30 @@ describe("fallbackVariant", () => {
     const out = fallbackVariant("Ship faster.");
     expect(out.variant.length).toBeGreaterThan(0);
   });
+
+  it("produces copy that actually differs from the original", () => {
+    // A fallback that echoes the input makes the A/B comparison meaningless.
+    expect(fallbackVariant(COPY).variant).not.toBe(COPY);
+  });
+
+  it("leads with the sentence carrying the hardest number", () => {
+    expect(fallbackVariant(COPY).variant.startsWith("New users go from signup")).toBe(true);
+    expect(fallbackVariant(COPY).angle).toBe("Proof-first");
+  });
+
+  it("keeps every sentence of the original", () => {
+    const out = fallbackVariant(COPY);
+    for (const sentence of COPY.split(/(?<=[.!?])\s+/)) {
+      expect(out.variant).toContain(sentence.trim());
+    }
+  });
+
+  it("leads with the closing line when the copy has no numbers", () => {
+    const noNumbers = "We rebuilt onboarding. It is simpler now. Try it free.";
+    const out = fallbackVariant(noNumbers);
+    expect(out.variant.startsWith("Try it free.")).toBe(true);
+    expect(out.angle).toBe("Outcome-first");
+  });
 });
 
 describe("generateVariant", () => {

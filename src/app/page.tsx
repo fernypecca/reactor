@@ -1,668 +1,850 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import AudienceGraph, { type NodeDatum } from "@/components/AudienceGraph";
+import Composer from "@/components/Composer";
+import ReactionFeed from "@/components/ReactionFeed";
+import Results from "@/components/Results";
+import {
+  AnimatedNumber,
+  BandLegend,
+  Sparkline,
+  VARIANT_COLOR,
+  compact,
+  runningAvg,
+  variantLetter,
+} from "@/components/Viz";
 import { AUDIENCES } from "@/lib/audiences";
+import {
+  addAudience,
+  getServerSnapshot,
+  getSnapshot,
+  removeAudience,
+  subscribe,
+} from "@/lib/audience-store";
 import { postJson, readNdjson } from "@/lib/client-utils";
 import { engagementFromReaction, sumEngagement } from "@/lib/engagement";
-import type {
-  Audience,
-  Reaction,
-  SimulationResult,
-} from "@/lib/types";
+import { applyFilter, bandCounts, isFiltered, NO_FILTER, type Filter } from "@/lib/filters";
+import { BAND_COLOR, bandFor, buildGraph } from "@/lib/graph";
+import {
+  TAIL_INTERVAL_MS,
+  emptyQueue,
+  intervalFor,
+  pickNext,
+  type PacerQueue,
+  type TailEvent,
+} from "@/lib/pacer";
+import { verdictFor } from "@/lib/verdict";
+import type { Audience, Reaction, RewriteResult, SimulationResult } from "@/lib/types";
 
-type Step = "audience" | "copy" | "simulate" | "results";
+type View = "variant-1" | "variant-2" | "diff";
 
 type SimState = {
   streaming: boolean;
   variantA: Reaction[];
   variantB: Reaction[];
   result?: SimulationResult;
-  rewrite?: { rewrite: string; why: string };
+  rewrite?: RewriteResult;
   error?: string;
-  stageLabel: string;
+  status: string;
 };
 
 const IDLE: SimState = {
   streaming: false,
   variantA: [],
   variantB: [],
-  stageLabel: "",
+  status: "",
 };
 
+const NEUTRAL = "#86868b";
+/** below this, a score change is noise rather than a real shift in opinion */
+const DELTA_FLOOR = 4;
+
 export default function Home() {
-  const [step, setStep] = useState<Step>("audience");
-  const [audience, setAudience] = useState<Audience | null>(null);
+  const customAudiences = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const audiences = useMemo(() => [...customAudiences, ...AUDIENCES], [customAudiences]);
+  const builtInIds = useMemo(() => new Set(AUDIENCES.map((a) => a.id)), []);
+
+  const [audienceId, setAudienceId] = useState<string>(AUDIENCES[0].id);
+  const audience = useMemo(
+    () => audiences.find((a) => a.id === audienceId) ?? AUDIENCES[0],
+    [audiences, audienceId],
+  );
+
+  const [generating, setGenerating] = useState(false);
+  const [genStage, setGenStage] = useState("");
+  const [genError, setGenError] = useState("");
   const [copyA, setCopyA] = useState("");
   const [copyB, setCopyB] = useState("");
   const [useB, setUseB] = useState(false);
   const [generatingB, setGeneratingB] = useState(false);
   const [bAngle, setBAngle] = useState("");
   const [bError, setBError] = useState("");
-  const [state, setState] = useState<SimState>(IDLE);
 
-  const variants = useMemo(
-    () => (useB && copyB.trim() ? [copyA, copyB] : [copyA]),
-    [copyA, copyB, useB],
+  const [state, setState] = useState<SimState>(IDLE);
+  const [view, setView] = useState<View>("variant-1");
+  const [filter, setFilter] = useState<Filter>(NO_FILTER);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoverSegment, setHoverSegment] = useState<string | null>(null);
+
+  const graph = useMemo(() => buildGraph(audience), [audience]);
+
+  // Switching audience invalidates every reaction on screen. A run in flight
+  // belongs to the old audience: its follower ids mean nothing here, so cancel
+  // the request and throw away whatever the pacer had queued.
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    queueRef.current = emptyQueue(false);
+    streamingRef.current = false;
+    setState(IDLE);
+    setView("variant-1");
+    setFilter(NO_FILTER);
+    setSelectedId(null);
+  }, [audienceId]);
+
+  const mapA = useMemo(
+    () => new Map(state.variantA.map((r) => [r.followerId, r])),
+    [state.variantA],
   );
+  const mapB = useMemo(
+    () => new Map(state.variantB.map((r) => [r.followerId, r])),
+    [state.variantB],
+  );
+
+  const hasB = state.variantB.length > 0 || (useB && copyB.trim().length > 0);
+  const expected = audience.profiles.length;
+  const received = state.variantA.length + state.variantB.length;
+  const totalExpected = expected * (hasB ? 2 : 1);
+
+  /** What each node is painted with — score bands, or A-vs-B delta in diff mode. */
+  const nodeData = useMemo(() => {
+    const out = new Map<string, NodeDatum>();
+    if (view === "diff") {
+      for (const n of graph.nodes) {
+        const a = mapA.get(n.id);
+        const b = mapB.get(n.id);
+        if (!a || !b) continue;
+        const delta = b.score - a.score;
+        const color =
+          delta > DELTA_FLOOR
+            ? VARIANT_COLOR["variant-2"]
+            : delta < -DELTA_FLOOR
+              ? VARIANT_COLOR["variant-1"]
+              : NEUTRAL;
+        out.set(n.id, {
+          color,
+          intensity: Math.min(Math.abs(delta) / 40, 1),
+          reaction: b,
+          note: `${delta > 0 ? "+" : ""}${delta} vs A`,
+        });
+      }
+      return out;
+    }
+    const src = view === "variant-2" ? mapB : mapA;
+    for (const [id, r] of src) {
+      out.set(id, {
+        color: BAND_COLOR[bandFor(r.score)],
+        intensity: r.score / 100,
+        reaction: r,
+      });
+    }
+    return out;
+  }, [view, graph, mapA, mapB]);
+
+  const feedReactions = view === "variant-1" ? state.variantA : state.variantB;
+
+  const highlight = useMemo(() => {
+    if (hoverSegment) {
+      return new Set(
+        graph.nodes.filter((n) => n.segment === hoverSegment).map((n) => n.id),
+      );
+    }
+    if (!isFiltered(filter)) return null;
+    return new Set(applyFilter(feedReactions, filter).map((r) => r.followerId));
+  }, [hoverSegment, graph, filter, feedReactions]);
+
+  const diffStats = useMemo(() => {
+    let up = 0;
+    let down = 0;
+    let flat = 0;
+    let converted = 0;
+    for (const n of graph.nodes) {
+      const a = mapA.get(n.id);
+      const b = mapB.get(n.id);
+      if (!a || !b) continue;
+      const d = b.score - a.score;
+      if (d > DELTA_FLOOR) up++;
+      else if (d < -DELTA_FLOOR) down++;
+      else flat++;
+      if (bandFor(a.score) !== "strong" && bandFor(b.score) === "strong") converted++;
+    }
+    return { up, down, flat, converted };
+  }, [graph, mapA, mapB]);
+
+  // ---- paced reveal -------------------------------------------------------
+  // The network fills this queue; a timer drains it. Nothing the server sends
+  // reaches the screen directly, which is what makes the reveal watchable.
+  const queueRef = useRef<PacerQueue>(emptyQueue(false));
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const intervalRef = useRef(300);
+  const reducedRef = useRef(false);
+
+  useEffect(() => {
+    reducedRef.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, []);
+
+  const stopPacer = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPacer, [stopPacer]);
+
+  const applyTail = useCallback((event: TailEvent) => {
+    if (event.kind === "results") {
+      const result = event.data as SimulationResult;
+      setState((s) => ({ ...s, result, status: "" }));
+      setView(result.bestVariantId as View);
+    }
+    if (event.kind === "rewrite") {
+      setState((s) => ({ ...s, rewrite: event.data as RewriteResult }));
+    }
+    if (event.kind === "done") {
+      streamingRef.current = false;
+      setState((s) => ({ ...s, streaming: false, status: "" }));
+    }
+  }, []);
+
+  /** Release one queued item, then schedule the next. */
+  const drip = useCallback(() => {
+    const q = queueRef.current;
+    const next = pickNext(q);
+
+    if (next.type === "end") {
+      timerRef.current = null;
+      return;
+    }
+    if (next.type === "wait") {
+      timerRef.current = setTimeout(drip, 110);
+      return;
+    }
+    if (next.type === "reactions") {
+      const fresh: Record<string, Reaction[]> = { "variant-1": [], "variant-2": [] };
+      for (const item of next.items) {
+        (item.variantId === "variant-2" ? q.b : q.a).shift();
+        fresh[item.variantId].push(item.reaction);
+      }
+      setState((s) => ({
+        ...s,
+        variantA: fresh["variant-1"].length ? [...s.variantA, ...fresh["variant-1"]] : s.variantA,
+        variantB: fresh["variant-2"].length ? [...s.variantB, ...fresh["variant-2"]] : s.variantB,
+        status: "Reading the room…",
+      }));
+      timerRef.current = setTimeout(drip, intervalRef.current);
+      return;
+    }
+    q.tail.shift();
+    applyTail(next.event);
+    timerRef.current = setTimeout(drip, TAIL_INTERVAL_MS);
+  }, [applyTail]);
+
+  /**
+   * Dump everything queued straight onto the screen. The pacer keeps running
+   * at zero delay: the network is usually still streaming, and stopping here
+   * would strand every reaction that has not arrived yet.
+   */
+  const skipReveal = useCallback(() => {
+    const q = queueRef.current;
+    const a = q.a.splice(0);
+    const b = q.b.splice(0);
+    if (a.length || b.length) {
+      setState((s) => ({
+        ...s,
+        variantA: [...s.variantA, ...a],
+        variantB: [...s.variantB, ...b],
+      }));
+    }
+    const tail = q.tail.splice(0);
+    for (const event of tail) applyTail(event);
+    intervalRef.current = 0;
+    if (timerRef.current === null) timerRef.current = setTimeout(drip, 0);
+  }, [applyTail, drip]);
+
+  async function generateAudience(icp: string) {
+    if (generating || icp.trim().length < 12) return;
+    setGenerating(true);
+    setGenError("");
+    setGenStage("Waking the writer…");
+    try {
+      const res = await fetch("/api/generate-audience", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ icp }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? "Could not build that audience");
+      }
+      let built: Audience | null = null;
+      await readNdjson(res, (event) => {
+        if (event.type === "stage") {
+          setGenStage((event.data as { label: string }).label);
+        }
+        if (event.type === "audience") {
+          built = event.data as Audience;
+        }
+        if (event.type === "error") {
+          setGenError((event.data as { message: string }).message);
+        }
+      });
+      if (built) {
+        const made = built as Audience;
+        addAudience(made);
+        setAudienceId(made.id);
+      }
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : "Could not build that audience");
+    } finally {
+      setGenerating(false);
+      setGenStage("");
+    }
+  }
+
+  function deleteAudience(id: string) {
+    removeAudience(id);
+    if (audienceId === id) setAudienceId(AUDIENCES[0].id);
+  }
 
   async function generateB() {
     if (!copyA.trim() || generatingB) return;
     setGeneratingB(true);
     setBError("");
     try {
-      const res = await postJson<{ variant: string; angle: string }>("/api/generate-variant", {
-        copy: copyA,
-      });
+      const res = await postJson<{ variant: string; angle: string }>(
+        "/api/generate-variant",
+        { copy: copyA },
+      );
       setCopyB(res.variant);
       setBAngle(res.angle);
       setUseB(true);
     } catch (err) {
-      setBError(err instanceof Error ? err.message : "Could not generate variant B");
+      setBError(err instanceof Error ? err.message : "Could not draft variant B");
     } finally {
       setGeneratingB(false);
     }
   }
 
-  async function run() {
-    if (!audience) return;
-    setState({ ...IDLE, streaming: true });
-    setStep("simulate");
-    try {
-      const res = await fetch("/api/simulate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audienceId: audience.id, variants }),
-      });
-      if (!res.ok) throw new Error("Simulation failed");
-      await readNdjson(res, (event) => {
-        if (event.type === "variant_start") {
-          const d = event.data as { variantId: string; copy: string };
-          setState((s) => ({ ...s, stageLabel: d.copy }));
-        }
-        if (event.type === "variant_done") {
-          const d = event.data as { variantId: string; avgScore: number };
-          const label = d.variantId === "variant-2" ? "B" : "A";
-          setState((s) => ({ ...s, stageLabel: `Variant ${label} done` }));
-        }
-        if (event.type === "reactions") {
-          const d = event.data as { variantId: string; reactions: Reaction[] };
-          setState((s) =>
-            d.variantId === "variant-2"
-              ? { ...s, variantB: [...s.variantB, ...d.reactions] }
-              : { ...s, variantA: [...s.variantA, ...d.reactions] },
-          );
-        }
-        if (event.type === "results") {
-          setState((s) => ({ ...s, result: event.data as SimulationResult }));
-        }
-        if (event.type === "rewrite") {
-          setState((s) => ({
-            ...s,
-            rewrite: event.data as { rewrite: string; why: string },
-          }));
-        }
-        if (event.type === "done") {
-          setState((s) => ({ ...s, streaming: false }));
-          setStep("results");
-        }
-        if (event.type === "error") {
-          const d = event.data as { message: string };
-          setState((s) => ({ ...s, streaming: false, error: d.message }));
-        }
-      });
-    } catch (err) {
-      setState((s) => ({
-        ...s,
-        streaming: false,
-        error: err instanceof Error ? err.message : "Unknown error",
-      }));
-    }
+  // true from the moment a run starts until the reveal finishes — the network
+  // finishing early is exactly what the pacer is hiding, so it cannot be the
+  // signal that lets another run start
+  const streamingRef = useRef(false);
+
+  const run = useCallback(
+    async (override?: string[]) => {
+      const list = (override ?? (useB && copyB.trim() ? [copyA, copyB] : [copyA]))
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (list.length === 0 || streamingRef.current) return;
+
+      streamingRef.current = true;
+      setState({ ...IDLE, streaming: true, status: "Waking the clones…" });
+      setView("variant-1");
+      setFilter(NO_FILTER);
+      setSelectedId(null);
+
+      const twoVariants = list.length === 2;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      stopPacer();
+      queueRef.current = emptyQueue(twoVariants);
+      // one step reveals one follower per variant, so the headcount is the
+      // step count whether we are running one variant or two
+      intervalRef.current = reducedRef.current ? 0 : intervalFor(audience.profiles.length);
+      timerRef.current = setTimeout(drip, intervalRef.current);
+
+      try {
+        const res = await fetch("/api/simulate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            audienceId: audience.id,
+            variants: list,
+            // generated audiences only exist in this browser
+            ...(builtInIds.has(audience.id) ? {} : { profiles: audience.profiles }),
+          }),
+        });
+        if (!res.ok) throw new Error("Simulation failed");
+
+        // everything lands in the queue; the pacer decides when it is seen
+        await readNdjson(res, (event) => {
+          const q = queueRef.current;
+          if (event.type === "reactions") {
+            const d = event.data as { variantId: string; reactions: Reaction[] };
+            (d.variantId === "variant-2" ? q.b : q.a).push(...d.reactions);
+          }
+          if (event.type === "variant_done") {
+            const d = event.data as { variantId: string };
+            if (d.variantId === "variant-2") q.bComplete = true;
+            else q.aComplete = true;
+          }
+          if (event.type === "results") {
+            q.tail.push({ kind: "results", data: event.data });
+          }
+          if (event.type === "rewrite") {
+            q.tail.push({ kind: "rewrite", data: event.data });
+          }
+          if (event.type === "done") {
+            q.tail.push({ kind: "done" });
+          }
+          if (event.type === "error") {
+            // failures are not entertainment — show them at once
+            const d = event.data as { message: string };
+            stopPacer();
+            streamingRef.current = false;
+            setState((s) => ({ ...s, streaming: false, status: "", error: d.message }));
+          }
+        });
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") return;
+        stopPacer();
+        streamingRef.current = false;
+        setState((s) => ({
+          ...s,
+          streaming: false,
+          status: "",
+          error: err instanceof Error ? err.message : "Unknown error",
+        }));
+      }
+    },
+    [audience, builtInIds, copyA, copyB, useB, drip, stopPacer],
+  );
+
+  // ⌘↵ / Ctrl+↵ runs from anywhere, including inside the textareas
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void run();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [run]);
+
+  function testRewrite() {
+    if (!state.result || !state.rewrite) return;
+    const best = state.result.variants.find(
+      (v) => v.variantId === state.result!.bestVariantId,
+    );
+    if (!best) return;
+    setCopyA(best.copy);
+    setCopyB(state.rewrite.rewrite);
+    setUseB(true);
+    setBAngle("objection-proof rewrite");
+    void run([best.copy, state.rewrite.rewrite]);
   }
 
+  const verdict = state.result
+    ? verdictFor(state.result.variants, state.result.bestVariantId)
+    : null;
+  // only badge a winner when the gap is bigger than the noise between runs
+  const winnerId =
+    verdict?.runnerUp && verdict.decisive ? verdict.best.variantId : null;
+
+  const viewedVariant =
+    state.result &&
+    (state.result.variants.find((v) => v.variantId === view) ??
+      state.result.variants.find((v) => v.variantId === state.result!.bestVariantId) ??
+      state.result.variants[0]);
+
+  const canRun = copyA.trim().length > 0 && !state.streaming;
+  const started = received > 0 || state.streaming;
+
+  const tabs: { id: View; label: string; color: string }[] = [
+    { id: "variant-1", label: "Variant A", color: VARIANT_COLOR["variant-1"] },
+    ...(state.variantB.length > 0
+      ? [
+          { id: "variant-2" as View, label: "Variant B", color: VARIANT_COLOR["variant-2"] },
+          { id: "diff" as View, label: "Δ Compare", color: "#1d1d1f" },
+        ]
+      : []),
+  ];
+
   return (
-    <main className="flex-1">
-      <header className="sticky top-0 z-10 bg-paper/80 backdrop-blur border-b border-line">
-        <div className="mx-auto max-w-5xl px-6 h-14 flex items-center justify-between">
-          <span className="font-semibold tracking-tight">Reactor</span>
-          <span className="text-sm text-ink-2">Simulate your audience before you post</span>
+    <main className="min-h-screen">
+      <header className="sticky top-0 z-30 border-b border-line-2 bg-canvas/85 backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-4 px-5 sm:px-6">
+          <span className="display text-[17px]">Reactor</span>
+          <span className="hidden text-[13px] text-ink-2 sm:inline">
+            Read the room before you post
+          </span>
+          <div className="ml-auto flex items-center gap-3">
+            {state.streaming && (
+              <>
+                <span className="flex items-center gap-2 text-[12px] text-ink-2">
+                  <span
+                    className="h-1.5 w-1.5 rounded-full pulse-dot"
+                    style={{ background: VARIANT_COLOR["variant-1"] }}
+                  />
+                  <span className="font-mono">
+                    {received}/{totalExpected}
+                  </span>
+                  <span className="hidden sm:inline">{state.status}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={skipReveal}
+                  className="rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-mist hover:text-ink-1"
+                >
+                  Skip
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => void run()}
+              disabled={!canRun}
+              className="rounded-full bg-ink-1 px-4 py-2 text-[13px] font-semibold text-white transition-opacity disabled:opacity-25 focus-visible:ring-2 focus-visible:ring-blue-1 focus-visible:ring-offset-2 focus-visible:outline-none"
+            >
+              {state.streaming ? "Simulating…" : "Run simulation"}
+            </button>
+          </div>
         </div>
       </header>
 
-      <section className="mx-auto max-w-5xl px-6 py-12">
-        <Stepper step={step} />
+      <div className="mx-auto max-w-[1400px] px-5 pt-10 pb-16 sm:px-6">
+        <h1 className="display max-w-2xl text-4xl text-balance sm:text-5xl">
+          Watch your audience react before anyone real does.
+        </h1>
+        <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-2">
+          {audience.profiles.length} simulated followers, clustered by what they care about.
+          Post your copy and watch the room turn — one clone at a time.
+        </p>
 
-        {step === "audience" && (
-          <AudiencePicker
-            selected={audience}
-            onSelect={(a) => {
-              setAudience(a);
-              setStep("copy");
-            }}
-          />
-        )}
+        <div className="mt-9 grid items-start gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+          <aside className="card lg:sticky lg:top-20 p-5">
+            <Composer
+              audiences={audiences}
+              audience={audience}
+              onAudience={(a) => setAudienceId(a.id)}
+              builtInIds={builtInIds}
+              onGenerate={generateAudience}
+              onDeleteAudience={deleteAudience}
+              generating={generating}
+              genStage={genStage}
+              genError={genError}
+              copyA={copyA}
+              setCopyA={setCopyA}
+              copyB={copyB}
+              setCopyB={setCopyB}
+              useB={useB}
+              setUseB={setUseB}
+              generatingB={generatingB}
+              bAngle={bAngle}
+              bError={bError}
+              onGenerateB={generateB}
+              onRun={() => void run()}
+              running={state.streaming}
+              disabled={!canRun}
+            />
+          </aside>
 
-        {step === "copy" && (
-          <CopyEditor
-            copyA={copyA}
-            setCopyA={setCopyA}
-            copyB={copyB}
-            setCopyB={setCopyB}
-            useB={useB}
-            setUseB={setUseB}
-            canRun={copyA.trim().length > 0}
-            generatingB={generatingB}
-            bAngle={bAngle}
-            bError={bError}
-            onGenerateB={generateB}
-            onLoadExample={() => {
-              setCopyA(
-                "We just shipped the fastest onboarding in SaaS — new users go from signup to first win in 4 minutes. 127 beta teams onboarded themselves this month, no calls, no setup. Try it free.",
-              );
-              setUseB(false);
-              setCopyB("");
-              setBAngle("");
-            }}
-            onBack={() => setStep("audience")}
-            onRun={run}
-          />
-        )}
+          <div className="min-w-0 space-y-5">
+            {state.error && (
+              <div className="card border-pink-1/30 bg-pink-1/[0.04] p-4 text-[13px] text-pink-1">
+                {state.error}
+              </div>
+            )}
 
-        {step === "simulate" && (
-          <SimulationView
-            state={state}
-            audienceName={audience?.name ?? ""}
-            hasB={variants.length === 2}
-          />
-        )}
+            {/* ---------------- the field ---------------- */}
+            <section className="card overflow-hidden">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-line-2 px-5 py-3.5">
+                <div className="flex gap-1">
+                  {tabs.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setView(t.id)}
+                      aria-pressed={view === t.id}
+                      className={`rounded-full px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                        view === t.id ? "text-white" : "text-ink-2 hover:bg-mist"
+                      }`}
+                      style={view === t.id ? { background: t.color } : undefined}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="ml-auto">
+                  {view === "diff" ? (
+                    <div className="flex items-center gap-x-4 gap-y-1 text-[11px] text-ink-2">
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="h-2 w-2 rounded-full"
+                          style={{ background: VARIANT_COLOR["variant-2"] }}
+                        />
+                        B landed better
+                        <span className="font-mono text-ink-3">{diffStats.up}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="h-2 w-2 rounded-full"
+                          style={{ background: VARIANT_COLOR["variant-1"] }}
+                        />
+                        A landed better
+                        <span className="font-mono text-ink-3">{diffStats.down}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-ink-3" />
+                        Unmoved
+                        <span className="font-mono text-ink-3">{diffStats.flat}</span>
+                      </span>
+                    </div>
+                  ) : (
+                    <BandLegend counts={bandCounts(feedReactions)} />
+                  )}
+                </div>
+              </div>
 
-        {step === "results" && state.result && (
-          <ResultsView state={state} onRerun={() => setStep("copy")} />
-        )}
-      </section>
+              {state.streaming && (
+                <div className="h-0.5 w-full bg-mist-2">
+                  <div
+                    className="bar-fill h-0.5 bg-blue-1"
+                    style={{ width: `${(received / Math.max(totalExpected, 1)) * 100}%` }}
+                  />
+                </div>
+              )}
+
+              <div className="graph-field relative">
+                <AudienceGraph
+                  graph={graph}
+                  data={nodeData}
+                  highlight={highlight}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  className="h-[360px] w-full sm:h-[460px]"
+                />
+
+                {!started && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-5 flex justify-center">
+                    <span className="rounded-full border border-line-2 bg-paper/90 px-4 py-2 text-[12px] text-ink-2 backdrop-blur">
+                      {audience.name} · {audience.profiles.length} clones waiting. Hover any one of
+                      them.
+                    </span>
+                  </div>
+                )}
+
+                {view === "diff" && diffStats.converted > 0 && (
+                  <div className="pointer-events-none absolute top-4 left-5">
+                    <span className="rounded-full bg-ink-1 px-3 py-1.5 text-[12px] font-medium text-white">
+                      {diffStats.converted}{" "}
+                      {diffStats.converted === 1 ? "follower" : "followers"} flipped into engaging
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* ---------------- live numbers ---------------- */}
+              <div className="border-t border-line-2 px-5 py-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <VariantStat
+                    variantId="variant-1"
+                    reactions={state.variantA}
+                    expected={expected}
+                    best={winnerId === "variant-1"}
+                    active={state.streaming && state.variantA.length < expected}
+                    animate={state.streaming}
+                  />
+                  {(state.variantB.length > 0 || (state.streaming && hasB)) && (
+                    <VariantStat
+                      variantId="variant-2"
+                      reactions={state.variantB}
+                      expected={expected}
+                      best={winnerId === "variant-2"}
+                      active={state.streaming && state.variantB.length < expected}
+                      animate={state.streaming}
+                    />
+                  )}
+                </div>
+                <div className="mt-4">
+                  <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[11px] text-ink-3">
+                    <span className="tracking-widest uppercase">Score trajectory</span>
+                    <span>ticks are individual clones · the line is the running average</span>
+                  </div>
+                  <Sparkline
+                    total={expected}
+                    series={[
+                      {
+                        id: "a",
+                        color: VARIANT_COLOR["variant-1"],
+                        points: runningAvg(state.variantA.map((r) => r.score)),
+                        raw: state.variantA.map((r) => r.score),
+                      },
+                      {
+                        id: "b",
+                        color: VARIANT_COLOR["variant-2"],
+                        points: runningAvg(state.variantB.map((r) => r.score)),
+                        raw: state.variantB.map((r) => r.score),
+                      },
+                    ]}
+                  />
+                </div>
+              </div>
+            </section>
+
+            {state.result && viewedVariant && (
+              <Results
+                result={state.result}
+                segments={audience.segments}
+                viewed={viewedVariant}
+                rewrite={state.rewrite}
+                filter={filter}
+                onFilter={setFilter}
+                onHoverSegment={setHoverSegment}
+                activeSegment={hoverSegment}
+                onTestRewrite={testRewrite}
+                busy={state.streaming}
+              />
+            )}
+
+            {feedReactions.length > 0 && (
+              <section className="card p-5">
+                <div className="mb-3 flex items-baseline justify-between">
+                  <h2 className="text-[11px] font-semibold tracking-widest text-ink-3 uppercase">
+                    Every reaction
+                  </h2>
+                  <span className="font-mono text-[11px] text-ink-3">
+                    variant {view === "variant-1" ? "A" : "B"}
+                  </span>
+                </div>
+                <ReactionFeed
+                  reactions={feedReactions}
+                  segments={audience.segments}
+                  clusters={viewedVariant?.objectionClusters.map((c) => c.objection) ?? []}
+                  filter={filter}
+                  onFilter={setFilter}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                />
+              </section>
+            )}
+          </div>
+        </div>
+      </div>
     </main>
   );
 }
 
-function Stepper({ step }: { step: Step }) {
-  const labels: Record<Step, string> = {
-    audience: "Audience",
-    copy: "Copy",
-    simulate: "Simulate",
-    results: "Results",
-  };
-  const order: Step[] = ["audience", "copy", "simulate", "results"];
-  const current = order.indexOf(step);
-  return (
-    <div className="flex items-center gap-2 mb-10 text-sm">
-      {order.map((s, i) => (
-        <div key={s} className="flex items-center gap-2">
-          <span
-            className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold ${
-              i <= current ? "bg-ink-1 text-white" : "bg-mist-2 text-ink-3"
-            }`}
-          >
-            {i + 1}
-          </span>
-          <span className={i <= current ? "text-ink-1 font-medium" : "text-ink-3"}>
-            {labels[s]}
-          </span>
-          {i < order.length - 1 && <span className="h-px w-6 bg-line" />}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function AudiencePicker({
-  selected,
-  onSelect,
-}: {
-  selected: Audience | null;
-  onSelect: (a: Audience) => void;
-}) {
-  return (
-    <div>
-      <h1 className="text-4xl font-semibold tracking-tight text-balance">
-        Choose who you&apos;re posting to.
-      </h1>
-      <p className="mt-3 text-ink-2">
-        Pick a simulated audience. Reactor clones their bios, interests and engagement styles.
-      </p>
-      <div className="mt-8 grid gap-4 sm:grid-cols-3">
-        {AUDIENCES.map((a) => (
-          <button
-            key={a.id}
-            onClick={() => onSelect(a)}
-            className={`lift rounded-2xl border p-5 text-left ${
-              selected?.id === a.id ? "border-blue-1" : "border-line bg-paper"
-            }`}
-          >
-            <h2 className="font-semibold text-lg">{a.name}</h2>
-            <p className="mt-2 text-sm text-ink-2">{a.description}</p>
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              {a.segments.map((s) => (
-                <span
-                  key={s.id}
-                  className="rounded-full bg-mist px-2.5 py-0.5 text-xs text-ink-2"
-                >
-                  {s.label}
-                </span>
-              ))}
-            </div>
-            <p className="mt-4 text-xs text-ink-3">
-              {a.profiles.length} followers simulated
-            </p>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function CopyEditor({
-  copyA,
-  setCopyA,
-  copyB,
-  setCopyB,
-  useB,
-  setUseB,
-  canRun,
-  generatingB,
-  bAngle,
-  bError,
-  onGenerateB,
-  onLoadExample,
-  onBack,
-  onRun,
-}: {
-  copyA: string;
-  setCopyA: (v: string) => void;
-  copyB: string;
-  setCopyB: (v: string) => void;
-  useB: boolean;
-  setUseB: (v: boolean) => void;
-  canRun: boolean;
-  generatingB: boolean;
-  bAngle: string;
-  bError: string;
-  onGenerateB: () => void;
-  onLoadExample: () => void;
-  onBack: () => void;
-  onRun: () => void;
-}) {
-  return (
-    <div>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-4xl font-semibold tracking-tight text-balance">
-            Write your launch copy.
-          </h1>
-          <p className="mt-3 text-ink-2">
-            Paste the post or announcement. Add a second variant to A/B test against the same audience.
-          </p>
-        </div>
-        <button
-          onClick={onLoadExample}
-          className="shrink-0 rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
-        >
-          Load example
-        </button>
-      </div>
-      <div className="mt-8 grid gap-4">
-        <label className="block">
-          <span className="text-sm font-medium text-ink-1">Variant A</span>
-          <textarea
-            value={copyA}
-            onChange={(e) => setCopyA(e.target.value)}
-            rows={6}
-            placeholder="We just shipped the fastest onboarding in SaaS…"
-            className="mt-2 w-full rounded-xl border border-line bg-paper p-4 text-sm focus:outline-none focus:border-blue-1 resize-y"
-          />
-        </label>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onGenerateB}
-            disabled={generatingB || !copyA.trim()}
-            className="rounded-full border border-line px-5 py-2.5 text-sm font-medium disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
-          >
-            {generatingB
-              ? "Generating…"
-              : useB && copyB.trim()
-                ? "Regenerate variant B"
-                : "Generate variant B"}
-          </button>
-          {bAngle && <span className="text-xs text-ink-3">Angle: {bAngle}</span>}
-        </div>
-        {bError && (
-          <p className="mt-3 rounded-xl bg-pink-1/10 p-3 text-sm text-pink-1">{bError}</p>
-        )}
-
-        <label className="flex items-center gap-2 text-sm font-medium text-ink-1">
-          <input
-            type="checkbox"
-            checked={useB}
-            onChange={(e) => setUseB(e.target.checked)}
-            className="h-4 w-4 rounded"
-          />
-          Add variant B for A/B testing
-        </label>
-
-        {useB && (
-          <label className="block fade-up">
-            <span className="text-sm font-medium text-ink-1">Variant B</span>
-            <textarea
-              value={copyB}
-              onChange={(e) => setCopyB(e.target.value)}
-              rows={6}
-              placeholder="Onboard 3x faster, or the first month is free…"
-              className="mt-2 w-full rounded-xl border border-line bg-paper p-4 text-sm focus:outline-none focus:border-blue-1 resize-y"
-            />
-          </label>
-        )}
-      </div>
-
-      <div className="mt-8 flex items-center gap-3">
-        <button
-          onClick={onBack}
-          className="rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
-        >
-          Back
-        </button>
-        <button
-          onClick={onRun}
-          disabled={!canRun}
-          className="rounded-full bg-blue-1 px-6 py-2.5 text-sm font-semibold text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1 focus-visible:ring-offset-2"
-        >
-          Simulate my launch
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SimulationView({
-  state,
-  audienceName,
-  hasB,
-}: {
-  state: SimState;
-  audienceName: string;
-  hasB: boolean;
-}) {
-  const total = state.variantA.length + state.variantB.length;
-  const engA = sumEngagement(state.variantA.map(engagementFromReaction));
-  const engB = sumEngagement(state.variantB.map(engagementFromReaction));
-  return (
-    <div>
-      <h1 className="text-4xl font-semibold tracking-tight text-balance">
-        Simulating {audienceName}.
-      </h1>
-      <p className="mt-3 text-ink-2">
-        Clones are reacting to your copy in real time.
-      </p>
-      {state.stageLabel && (
-        <p className="mt-2 text-sm text-ink-3">{state.stageLabel}</p>
-      )}
-      {state.error && (
-        <p className="mt-4 rounded-xl bg-pink-1/10 p-4 text-sm text-pink-1">{state.error}</p>
-      )}
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <EngagementTicker
-          label="Variant A"
-          reactions={state.variantA}
-          leading={hasB ? engA.likes >= engB.likes : true}
-        />
-        {hasB && (
-          <EngagementTicker
-            label="Variant B"
-            reactions={state.variantB}
-            leading={engB.likes > engA.likes}
-          />
-        )}
-      </div>
-      <div className="mt-8 flex items-center gap-2 text-sm text-ink-2">
-        <span className="h-2 w-2 rounded-full bg-blue-1 pulse-dot" />
-        {total} reactions streamed
-      </div>
-      <div className="mt-6 grid gap-2">
-        {state.variantA.map((r) => (
-          <ReactionCard key={r.followerId} reaction={r} />
-        ))}
-        {state.variantB.map((r) => (
-          <ReactionCard key={r.followerId} reaction={r} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EngagementTicker({
-  label,
+function VariantStat({
+  variantId,
   reactions,
-  leading,
+  expected,
+  best,
+  active = false,
+  animate = false,
 }: {
-  label: string;
+  variantId: string;
   reactions: Reaction[];
-  leading: boolean;
+  expected: number;
+  best: boolean;
+  /** currently being revealed — the card everyone should be looking at */
+  active?: boolean;
+  animate?: boolean;
 }) {
-  const e = useMemo(
-    () => sumEngagement(reactions.map(engagementFromReaction)),
-    [reactions],
-  );
-  const stats = [
-    { label: "Likes", value: e.likes },
-    { label: "Replies", value: e.replies },
-    { label: "Reposts", value: e.reposts },
-    { label: "Impressions", value: e.impressions },
-  ];
+  const color = VARIANT_COLOR[variantId];
+  const avg =
+    reactions.length === 0
+      ? 0
+      : Math.round((reactions.reduce((s, r) => s + r.score, 0) / reactions.length) * 10) / 10;
+  const e = sumEngagement(reactions.map(engagementFromReaction));
+
   return (
     <div
-      className={`rounded-2xl border p-4 ${
-        leading ? "border-blue-1/40 bg-blue-1/5" : "border-line bg-paper"
-      }`}
+      className="rounded-2xl border p-3.5 transition-all duration-300"
+      style={{
+        borderColor: active ? color : "var(--color-line-2)",
+        background: active ? `${color}08` : undefined,
+        boxShadow: active ? `0 0 0 3px ${color}14` : undefined,
+      }}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold">{label}</span>
-        {leading && (
-          <span className="rounded-full bg-blue-1/15 px-2.5 py-0.5 text-[11px] font-semibold text-blue-1">
-            Leading
-          </span>
-        )}
-        <span className="text-xs text-ink-3">{reactions.length} reactions</span>
-      </div>
-      <div className="mt-3 grid grid-cols-4 gap-2 text-center">
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div className="text-xl font-semibold tabular-nums">{s.value.toLocaleString()}</div>
-            <div className="text-[11px] text-ink-3">{s.label}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ReactionCard({ reaction }: { reaction: Reaction }) {
-  return (
-    <div className="fade-up rounded-xl border border-line p-4 flex items-start gap-3">
-      <div className="h-8 w-8 shrink-0 rounded-full bg-mist-2 flex items-center justify-center text-xs font-semibold">
-        {reaction.handle.slice(1, 3)}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold truncate">{reaction.name}</span>
-          <span className="text-xs text-ink-3">{reaction.handle}</span>
-          <span className="rounded-full bg-mist px-2 py-0.5 text-[11px] text-ink-2">
-            {reaction.segment}
-          </span>
-        </div>
-        <p className="mt-1 text-sm text-ink-1">{reaction.comment}</p>
-        {reaction.objection && (
-          <p className="mt-2 text-xs text-orange-1">⚠ {reaction.objection}</p>
-        )}
-      </div>
-      <span
-        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-          reaction.score >= 70
-            ? "bg-green-1/15 text-green-1"
-            : reaction.score >= 40
-              ? "bg-orange-1/15 text-orange-1"
-              : "bg-pink-1/15 text-pink-1"
-        }`}
-      >
-        {reaction.score}
-      </span>
-    </div>
-  );
-}
-
-function ResultsView({ state, onRerun }: { state: SimState; onRerun: () => void }) {
-  const result = state.result!;
-  return (
-    <div>
-      <div className="flex items-start justify-between gap-4">
-        <h1 className="text-4xl font-semibold tracking-tight text-balance">
-          Your audience has spoken.
-        </h1>
-        <button
-          onClick={onRerun}
-          className="shrink-0 rounded-full border border-line px-5 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
+      <div className="flex items-center gap-2">
+        <span
+          className="flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white"
+          style={{ background: color }}
         >
-          Edit copy
-        </button>
-      </div>
-
-      <div className="mt-8 grid gap-4 sm:grid-cols-2">
-        {result.variants.map((v) => (
-          <div
-            key={v.variantId}
-            className={`rounded-2xl border p-5 ${
-              v.variantId === result.bestVariantId ? "border-green-1 bg-green-1/5" : "border-line"
-            }`}
+          {variantLetter(variantId)}
+        </span>
+        {active && (
+          <span
+            className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide uppercase"
+            style={{ color }}
           >
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold uppercase tracking-wide text-ink-3">
-                Variant {v.variantId === "variant-1" ? "A" : "B"}
-              </span>
-              {v.variantId === result.bestVariantId && (
-                <span className="rounded-full bg-green-1/15 px-2.5 py-0.5 text-xs font-semibold text-green-1">
-                  Winner
-                </span>
-              )}
-            </div>
-            <div className="mt-4 text-5xl font-semibold tracking-tight">{v.avgScore}</div>
-            <div className="mt-1 text-sm text-ink-3">avg engagement score</div>
-            <p className="mt-4 text-sm text-ink-2 line-clamp-3">{v.copy}</p>
-
-            <div className="mt-5">
-              <div className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
-                Objections
-              </div>
-              {v.objectionClusters.length === 0 ? (
-                <p className="mt-2 text-sm text-ink-3">No major objections raised.</p>
-              ) : (
-                <div className="mt-2 space-y-1.5">
-                  {v.objectionClusters.map((c) => (
-                    <div key={c.objection} className="flex items-center justify-between text-sm">
-                      <span className="text-ink-2 capitalize">{c.objection}</span>
-                      <span className="font-semibold">{c.count}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-5">
-              <div className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
-                By segment
-              </div>
-              <div className="mt-2 space-y-2">
-                {v.segmentScores.map((s) => (
-                  <div key={s.segment}>
-                    <div className="flex justify-between text-xs text-ink-2">
-                      <span className="capitalize">{s.segment}</span>
-                      <span>{s.avg}</span>
-                    </div>
-                    <div className="mt-1 h-1.5 rounded-full bg-mist-2">
-                      <div
-                        className="progress-fill h-1.5 rounded-full"
-                        style={{ width: `${s.avg}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-5">
-              <div className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
-                Engagement
-              </div>
-              <div className="mt-2 grid grid-cols-4 gap-2 text-center">
-                <div>
-                  <div className="text-lg font-semibold tabular-nums">
-                    {v.engagement.likes.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-ink-3">Likes</div>
-                </div>
-                <div>
-                  <div className="text-lg font-semibold tabular-nums">
-                    {v.engagement.replies.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-ink-3">Replies</div>
-                </div>
-                <div>
-                  <div className="text-lg font-semibold tabular-nums">
-                    {v.engagement.reposts.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-ink-3">Reposts</div>
-                </div>
-                <div>
-                  <div className="text-lg font-semibold tabular-nums">
-                    {v.engagement.impressions.toLocaleString()}
-                  </div>
-                  <div className="text-[11px] text-ink-3">Impressions</div>
-                </div>
-              </div>
-            </div>
+            <span
+              className="h-1.5 w-1.5 rounded-full pulse-dot"
+              style={{ background: color }}
+            />
+            Live
+          </span>
+        )}
+        {best && (
+          <span className="rounded-full bg-green-1/12 px-2 py-0.5 text-[10px] font-semibold text-green-1">
+            WINNER
+          </span>
+        )}
+        <span className="ml-auto font-mono text-[11px] text-ink-3">
+          {reactions.length}/{expected}
+        </span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-2">
+        <AnimatedNumber
+          value={avg}
+          animate={animate}
+          format={(n) => n.toFixed(1)}
+          className="numeral text-4xl"
+          style={{ color }}
+        />
+        <span className="text-[11px] text-ink-3">avg score</span>
+      </div>
+      <div className="mt-2 h-1 rounded-full bg-mist-2">
+        <div
+          className="bar-fill h-1 rounded-full"
+          style={{ width: `${Math.max(avg, 1)}%`, background: color }}
+        />
+      </div>
+      <dl className="mt-3 grid grid-cols-4 gap-1 text-center">
+        {(
+          [
+            ["Likes", e.likes],
+            ["Replies", e.replies],
+            ["Reposts", e.reposts],
+            ["Views", e.impressions],
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label}>
+            <dd className="numeral text-[15px]">
+              <AnimatedNumber value={value} animate={animate} format={compact} />
+            </dd>
+            <dt className="text-[10px] text-ink-3">{label}</dt>
           </div>
         ))}
-      </div>
-
-      {state.rewrite && (
-        <div className="mt-6 fade-up rounded-2xl border border-blue-1/40 bg-blue-1/5 p-6">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold text-blue-1 uppercase tracking-wide">
-              Recommended rewrite
-            </div>
-            <CopyButton text={state.rewrite.rewrite} />
-          </div>
-          <p className="mt-3 text-lg leading-relaxed">{state.rewrite.rewrite}</p>
-          <p className="mt-3 text-sm text-ink-2">{state.rewrite.why}</p>
-        </div>
-      )}
+      </dl>
     </div>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
-  return (
-    <button
-      onClick={copy}
-      className="shrink-0 rounded-full border border-blue-1/40 px-4 py-1.5 text-xs font-medium text-blue-1 hover:bg-blue-1/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-1"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
   );
 }

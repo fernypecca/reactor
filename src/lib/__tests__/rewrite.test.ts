@@ -46,6 +46,7 @@ describe("rewriteVariant", () => {
     const out = await rewriteVariant(variants);
     expect(out.rewrite.length).toBeGreaterThan(0);
     expect(out.why.length).toBeGreaterThan(0);
+    expect(out.source).toBe("llm");
   });
 
   it("falls back to the best variant copy on LLM failure", async () => {
@@ -53,12 +54,14 @@ describe("rewriteVariant", () => {
     const out = await rewriteVariant(variants);
     expect(out.rewrite).toBe(variants[1].copy);
     expect(out.why.length).toBeGreaterThan(0);
+    // the UI must be able to tell this apart from a real rewrite
+    expect(out.source).toBe("fallback");
   });
 
   it("returns empty result when variants array is empty", async () => {
     vi.mocked(completeJSON).mockResolvedValue({ rewrite: "x", why: "y" });
     const out = await rewriteVariant([]);
-    expect(out).toEqual({ rewrite: "", why: "No variants to rewrite." });
+    expect(out).toEqual({ rewrite: "", why: "No variants to rewrite.", source: "fallback" });
   });
 
   it("treats empty rewrite string as invalid and falls back to best variant", async () => {
@@ -66,5 +69,6 @@ describe("rewriteVariant", () => {
     const out = await rewriteVariant(variants);
     expect(out.rewrite).toBe(variants[1].copy);
     expect(out.why.length).toBeGreaterThan(0);
+    expect(out.source).toBe("fallback");
   });
 });

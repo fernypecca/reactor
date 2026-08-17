@@ -3,7 +3,8 @@ import { AUDIENCES } from "@/lib/audiences";
 import { simulateVariant } from "@/lib/simulate";
 import { rewriteVariant } from "@/lib/rewrite";
 import { buildVariantResult, pickBestVariant } from "@/lib/aggregate";
-import type { SimulateInput, SimulationResult } from "@/lib/types";
+import { sanitizeProfiles } from "@/lib/audience-schema";
+import type { FollowerProfile, SimulateInput, SimulationResult } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ function isValidInput(p: unknown): p is SimulateInput {
 
 export async function POST(req: Request) {
   let input: SimulateInput;
+  let profiles: FollowerProfile[];
   try {
     const body = await req.json();
     if (!isValidInput(body)) {
@@ -31,13 +33,28 @@ export async function POST(req: Request) {
       audienceId: body.audienceId,
       variants: body.variants.map((v: string) => v.trim()),
     };
+
+    // Audiences generated from an ICP only exist in the browser, so the client
+    // sends the profiles along. Everything in them is untrusted.
+    const inlineProfiles = (body as Record<string, unknown>).profiles;
+    if (inlineProfiles !== undefined) {
+      const result = sanitizeProfiles(inlineProfiles);
+      if (!result.ok) {
+        return NextResponse.json(
+          { error: `Invalid audience profiles (${result.error})` },
+          { status: 400 },
+        );
+      }
+      profiles = result.profiles;
+    } else {
+      const audience = AUDIENCES.find((a) => a.id === input.audienceId);
+      if (!audience) {
+        return NextResponse.json({ error: "Unknown audience" }, { status: 404 });
+      }
+      profiles = audience.profiles;
+    }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const audience = AUDIENCES.find((a) => a.id === input.audienceId);
-  if (!audience) {
-    return NextResponse.json({ error: "Unknown audience" }, { status: 404 });
   }
 
   const encoder = new TextEncoder();
@@ -58,7 +75,7 @@ export async function POST(req: Request) {
             const variantId = variantIds[i];
             send("variant_start", { variantId, copy });
             const reactions: Awaited<ReturnType<typeof simulateVariant>> = [];
-            await simulateVariant(audience.profiles, copy, (batch) => {
+            await simulateVariant(profiles, copy, (batch) => {
               reactions.push(...batch);
               send("reactions", { variantId, reactions: batch });
             });
@@ -68,17 +85,17 @@ export async function POST(req: Request) {
           }),
         );
 
-        const { rewrite, why } = await rewriteVariant(variantResults);
+        const rewriteResult = await rewriteVariant(variantResults);
 
         const result: SimulationResult = {
           audienceId: input.audienceId,
           variants: variantResults,
           bestVariantId: pickBestVariant(variantResults),
-          rewrite,
+          rewrite: rewriteResult.rewrite,
         };
 
         send("results", result);
-        send("rewrite", { rewrite, why });
+        send("rewrite", rewriteResult);
         send("done", { ok: true });
       } catch (err) {
         send("error", {
