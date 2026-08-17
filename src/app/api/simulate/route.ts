@@ -4,6 +4,7 @@ import { simulateVariant } from "@/lib/simulate";
 import { rewriteVariant } from "@/lib/rewrite";
 import { buildVariantResult, pickBestVariant } from "@/lib/aggregate";
 import { sanitizeProfiles } from "@/lib/audience-schema";
+import { sanitizeCampaign, type Campaign } from "@/lib/campaign";
 import type { FollowerProfile, SimulateInput, SimulationResult } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -24,6 +25,7 @@ function isValidInput(p: unknown): p is SimulateInput {
 export async function POST(req: Request) {
   let input: SimulateInput;
   let profiles: FollowerProfile[];
+  let campaign: Campaign;
   try {
     const body = await req.json();
     if (!isValidInput(body)) {
@@ -33,6 +35,8 @@ export async function POST(req: Request) {
       audienceId: body.audienceId,
       variants: body.variants.map((v: string) => v.trim()),
     };
+
+    campaign = sanitizeCampaign((body as Record<string, unknown>).campaign);
 
     // Audiences generated from an ICP only exist in the browser, so the client
     // sends the profiles along. Everything in them is untrusted.
@@ -75,17 +79,22 @@ export async function POST(req: Request) {
             const variantId = variantIds[i];
             send("variant_start", { variantId, copy });
             const reactions: Awaited<ReturnType<typeof simulateVariant>> = [];
-            await simulateVariant(profiles, copy, (batch) => {
-              reactions.push(...batch);
-              send("reactions", { variantId, reactions: batch });
-            });
+            await simulateVariant(
+              profiles,
+              copy,
+              (batch) => {
+                reactions.push(...batch);
+                send("reactions", { variantId, reactions: batch });
+              },
+              campaign,
+            );
             const result = buildVariantResult(variantId, copy, reactions);
             send("variant_done", { variantId, avgScore: result.avgScore });
             return result;
           }),
         );
 
-        const rewriteResult = await rewriteVariant(variantResults);
+        const rewriteResult = await rewriteVariant(variantResults, campaign);
 
         const result: SimulationResult = {
           audienceId: input.audienceId,

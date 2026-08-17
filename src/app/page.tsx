@@ -31,6 +31,7 @@ import {
 } from "@/lib/audience-store";
 import { postJson, readNdjson } from "@/lib/client-utils";
 import { engagementFromReaction, sumEngagement } from "@/lib/engagement";
+import { EMPTY_CAMPAIGN, type Campaign } from "@/lib/campaign";
 import { applyFilter, bandCounts, isFiltered, NO_FILTER, type Filter } from "@/lib/filters";
 import { BAND_COLOR, bandFor, buildGraph } from "@/lib/graph";
 import {
@@ -87,6 +88,8 @@ export default function Home() {
   const [generatingB, setGeneratingB] = useState(false);
   const [bAngle, setBAngle] = useState("");
   const [bError, setBError] = useState("");
+
+  const [campaign, setCampaign] = useState<Campaign>(EMPTY_CAMPAIGN);
 
   const [state, setState] = useState<SimState>(IDLE);
   const [view, setView] = useState<View>("variant-1");
@@ -386,6 +389,7 @@ export default function Home() {
           body: JSON.stringify({
             audienceId: audience.id,
             variants: list,
+            campaign,
             // generated audiences only exist in this browser
             ...(builtInIds.has(audience.id) ? {} : { profiles: audience.profiles }),
           }),
@@ -433,7 +437,7 @@ export default function Home() {
         }));
       }
     },
-    [audience, builtInIds, copyA, copyB, useB, drip, stopPacer],
+    [audience, builtInIds, campaign, copyA, copyB, useB, drip, stopPacer],
   );
 
   // ⌘↵ / Ctrl+↵ runs from anywhere, including inside the textareas
@@ -546,6 +550,8 @@ export default function Home() {
               onAudience={(a) => setAudienceId(a.id)}
               builtInIds={builtInIds}
               onGenerate={generateAudience}
+              campaign={campaign}
+              setCampaign={setCampaign}
               onDeleteAudience={deleteAudience}
               generating={generating}
               genStage={genStage}

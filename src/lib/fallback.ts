@@ -1,3 +1,4 @@
+import { hasContext, type Campaign } from "./campaign";
 import type { FollowerProfile, Reaction } from "./types";
 
 function hash(s: string): number {
@@ -36,11 +37,20 @@ const RISK_REVERSAL = /\b(free|trial|no credit card|money[- ]back|cancel anytime
  * reacts to concrete properties of the copy, so the spread across the
  * audience is a real signal rather than noise around a constant.
  */
-export function fallbackReactions(profiles: FollowerProfile[], copy: string): Reaction[] {
+export function fallbackReactions(
+  profiles: FollowerProfile[],
+  copy: string,
+  campaign?: Campaign,
+): Reaction[] {
   const copyLower = copy.toLowerCase();
-  const hasProof = PROOF.test(copy);
+  // Context is what the reader already knows about the offer, so it counts
+  // toward proof and risk reversal — but not toward interest matching, which
+  // is about what they actually read in the post.
+  const known =
+    campaign && hasContext(campaign) ? `${copy}\n${campaign.context}` : copy;
+  const hasProof = PROOF.test(known);
   const isHypey = HYPE.test(copy);
-  const derisked = RISK_REVERSAL.test(copy);
+  const derisked = RISK_REVERSAL.test(known);
 
   return profiles.map((p) => {
     const interestHits = p.interests.filter((i) => copyLower.includes(i.toLowerCase())).length;

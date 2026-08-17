@@ -1,5 +1,6 @@
 import { completeJSON } from "./llm";
 import { pickBestVariant } from "./aggregate";
+import { hasContext, type Campaign } from "./campaign";
 import type { RewriteResult, VariantResult } from "./types";
 
 type RewritePayload = { rewrite: string; why: string };
@@ -17,7 +18,10 @@ function isRewritePayload(v: unknown): v is RewritePayload {
 const REWRITE_SYSTEM = `You are a conversion copywriter. Given two variants of a launch post and how a simulated audience reacted to each, write ONE improved version that keeps the best elements and neutralizes the top objection. Keep the creator's voice. No hype words. No placeholders.
 Respond with ONLY valid JSON: {"rewrite": string, "why": string}`;
 
-export async function rewriteVariant(variants: VariantResult[]): Promise<RewriteResult> {
+export async function rewriteVariant(
+  variants: VariantResult[],
+  campaign?: Campaign,
+): Promise<RewriteResult> {
   if (variants.length === 0) {
     return { rewrite: "", why: "No variants to rewrite.", source: "fallback" };
   }
@@ -30,7 +34,12 @@ export async function rewriteVariant(variants: VariantResult[]): Promise<Rewrite
     source: "fallback",
   };
 
-  const prompt = variants
+  const contextBlock =
+    campaign && hasContext(campaign)
+      ? `PRODUCT CONTEXT (true, reuse these specifics; invent nothing beyond them):\n"""\n${campaign.context}\n"""\n\n`
+      : "";
+
+  const prompt = contextBlock + variants
     .map(
       (v) =>
         `VARIANT ${v.variantId} (avg score ${v.avgScore}):\n"""\n${v.copy}\n"""\nTop objections: ${

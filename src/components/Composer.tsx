@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { GOALS, type Campaign } from "@/lib/campaign";
 import { pickExample } from "@/lib/examples";
 import type { Audience } from "@/lib/types";
 import { VARIANT_COLOR } from "./Viz";
@@ -11,6 +12,8 @@ type Props = {
   onAudience: (a: Audience) => void;
   builtInIds: Set<string>;
   onGenerate: (icp: string) => void;
+  campaign: Campaign;
+  setCampaign: (c: Campaign) => void;
   onDeleteAudience: (id: string) => void;
   generating: boolean;
   genStage: string;
@@ -55,6 +58,8 @@ export default function Composer({
   onAudience,
   builtInIds,
   onGenerate,
+  campaign,
+  setCampaign,
   onDeleteAudience,
   generating,
   genStage,
@@ -241,6 +246,49 @@ export default function Composer({
             />
           </div>
         )}
+      </section>
+
+      <section>
+        <div className="flex items-center justify-between">
+          <Label>Context</Label>
+          <span className="text-[11px] text-ink-3">optional, sharpens objections</span>
+        </div>
+
+        <div className="field mt-3 p-3">
+          <textarea
+            value={campaign.context}
+            onChange={(e) => setCampaign({ ...campaign, context: e.target.value })}
+            rows={3}
+            maxLength={600}
+            placeholder="What is it, who is it for, what does it cost? e.g. Email tool for wedding photographers. 49 EUR/mo, 14-day trial, no card."
+            className="w-full resize-y bg-transparent text-[13px] leading-relaxed outline-none placeholder:text-ink-3"
+          />
+        </div>
+
+        <div className="mt-3">
+          <div className="text-[11px] text-ink-2">What should this post achieve?</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {GOALS.map((g) => {
+              const active = campaign.goal === g.id;
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  title={g.hint}
+                  aria-pressed={active}
+                  onClick={() => setCampaign({ ...campaign, goal: g.id })}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    active
+                      ? "border-transparent bg-ink-1 text-white"
+                      : "border-line-2 bg-paper text-ink-2 hover:border-line hover:text-ink-1"
+                  }`}
+                >
+                  {g.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </section>
 
       <button

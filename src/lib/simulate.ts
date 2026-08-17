@@ -1,4 +1,5 @@
 import { completeJSON } from "./llm";
+import { GOAL_BRIEF, hasContext, type Campaign } from "./campaign";
 import type { FollowerProfile, Reaction } from "./types";
 import { fallbackReactions } from "./fallback";
 
@@ -28,17 +29,26 @@ const escapePrompt = (s: string) => s.replace(/[\\`"]/g, (c) => `\\${c}`);
 const SIM_SYSTEM = `You are a realistic social-media simulator. A creator is about to launch copy to their audience of followers.
 For each follower you are given their bio, interests, tone, engagement style and a typical objection. Reply AS that follower, in their voice, in one line or two.
 Rules:
-- score is how likely THIS follower is to engage positively, 0-100.
+- score is 0-100. What it measures is given per run under GOAL — read it before scoring.
 - comment is what the follower would reply, using THEIR tone and interests, NEVER generic AI praise.
 - objection is a one-line concern from the follower's point of view, or "" if the follower would engage without raising one.
 - Never invent facts about the product. Never use "amazing" or "game-changing".
+- If PRODUCT CONTEXT is given, treat it as what this follower already knows. Objections must engage with those specifics — the real price, the real audience — never ask for something the context already answers.
 Respond with ONLY valid JSON: an array of {"followerId": string, "score": number, "comment": string, "objection": string}`;
 
 export async function simulateVariant(
   profiles: FollowerProfile[],
   copy: string,
   onBatch: (reactions: Reaction[]) => void,
+  campaign?: Campaign,
 ): Promise<Reaction[]> {
+  const goal = campaign?.goal ?? "engagement";
+  const contextBlock =
+    campaign && hasContext(campaign)
+      ? `PRODUCT CONTEXT (what this audience already knows):\n"""\n${escapePrompt(campaign.context)}\n"""\n\n`
+      : "";
+  const goalBlock = `GOAL: ${GOAL_BRIEF[goal]}.\n\n`;
+
   const all: Reaction[] = [];
   const seen = new Set<string>();
 
@@ -50,7 +60,7 @@ export async function simulateVariant(
       const payload = await completeJSON<ReactionPayload[]>(
         {
           system: SIM_SYSTEM,
-          prompt: `CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
+          prompt: `${contextBlock}${goalBlock}CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
             .map(
               (p) =>
                 `- ${escapePrompt(p.handle)} (${escapePrompt(p.name)}) | bio: ${escapePrompt(
@@ -92,7 +102,7 @@ export async function simulateVariant(
     } catch (err) {
       console.warn("[simulate] batch failed, falling back:", err);
       const missing = batch.filter((p) => !seen.has(p.id));
-      reactions = fallbackReactions(missing, copy).filter((r) => {
+      reactions = fallbackReactions(missing, copy, campaign).filter((r) => {
         if (seen.has(r.followerId)) return false;
         seen.add(r.followerId);
         return true;
