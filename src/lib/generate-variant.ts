@@ -1,4 +1,4 @@
-import { completeJSON } from "./llm";
+import { completeJSON, hasModel } from "./llm";
 
 type VariantPayload = { variant: string; angle: string };
 
@@ -65,6 +65,8 @@ export async function generateVariant(
 ): Promise<{ variant: string; angle: string }> {
   const trimmed = copy.trim();
   const fallback = fallbackVariant(trimmed);
+  // no model, no second angle worth waiting for
+  if (!hasModel()) return fallback;
   try {
     const result = await completeJSON<VariantPayload>(
       {

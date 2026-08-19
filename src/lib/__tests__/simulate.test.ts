@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const captured: { system: string; prompt: string }[] = [];
 let respond: (opts: { prompt: string }) => unknown = () => [];
 
 vi.mock("@/lib/llm", () => ({
   complete: vi.fn(),
+  hasModel: vi.fn(() => true),
   completeJSON: vi.fn((opts: { system: string; prompt: string }, validate: (v: unknown) => boolean) => {
     captured.push({ system: opts.system, prompt: opts.prompt });
     const raw = respond(opts);
@@ -14,6 +15,7 @@ vi.mock("@/lib/llm", () => ({
 }));
 
 import { simulateVariant } from "@/lib/simulate";
+import { hasModel } from "@/lib/llm";
 import type { FollowerProfile } from "@/lib/types";
 
 const profiles: FollowerProfile[] = [
@@ -43,6 +45,8 @@ const profiles: FollowerProfile[] = [
 
 const answer = (ids: string[]) =>
   ids.map((id) => ({ followerId: id, score: 80, comment: "sharp", objection: "" }));
+
+afterEach(() => vi.mocked(hasModel).mockReturnValue(true));
 
 describe("simulateVariant prompt", () => {
   it("sends every follower id, or the model cannot answer with one", () => {
@@ -110,5 +114,15 @@ describe("simulateVariant matching", () => {
     respond = () => answer(profiles.map((p) => p.id));
     const out = await simulateVariant(profiles, "copy", () => {});
     expect(out.map((r) => r.followerId).sort()).toEqual(profiles.map((p) => p.id).sort());
+  });
+
+  it("skips the LLM entirely when no model is configured", async () => {
+    vi.mocked(hasModel).mockReturnValue(false);
+    captured.length = 0;
+    const out = await simulateVariant(profiles, "copy", () => {});
+    // the fallback answers in the followers' own voice, never the mock's "sharp"
+    expect(captured).toHaveLength(0);
+    expect(out).toHaveLength(2);
+    expect(out.every((r) => r.comment !== "sharp")).toBe(true);
   });
 });

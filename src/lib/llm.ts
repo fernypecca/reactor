@@ -4,6 +4,11 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export type ModelTier = "fast" | "smart";
 
+/** True when a model is configured — callers with a deterministic fallback skip the failed attempts when this is false. */
+export function hasModel(): boolean {
+  return Boolean(process.env.ANTHROPIC_API_KEY);
+}
+
 export function resolveModel(tier: ModelTier): string {
   if (tier === "fast") {
     return process.env.ANTHROPIC_FAST_MODEL || "claude-haiku-4-5";

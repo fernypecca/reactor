@@ -1,4 +1,4 @@
-import { completeJSON } from "./llm";
+import { completeJSON, hasModel } from "./llm";
 import { pickBestVariant } from "./aggregate";
 import { hasContext, type Campaign } from "./campaign";
 import type { RewriteResult, VariantResult } from "./types";
@@ -33,6 +33,9 @@ export async function rewriteVariant(
     why: "Highest simulated engagement of the tested variants.",
     source: "fallback",
   };
+
+  // no model, no rewrite worth waiting for
+  if (!hasModel()) return fallback;
 
   const contextBlock =
     campaign && hasContext(campaign)

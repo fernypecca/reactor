@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/llm", () => ({
   complete: vi.fn(),
+  hasModel: vi.fn(() => true),
   completeJSON: vi.fn((opts, validate) => {
     const raw = { variant: "", angle: "Direct & benefit-first" };
     if (validate(raw)) return Promise.resolve(raw);
@@ -10,7 +11,7 @@ vi.mock("@/lib/llm", () => ({
 }));
 
 import { fallbackVariant, generateVariant } from "@/lib/generate-variant";
-import { completeJSON } from "@/lib/llm";
+import { completeJSON, hasModel } from "@/lib/llm";
 
 const COPY =
   "We just shipped the fastest onboarding in SaaS. New users go from signup to first win in 4 minutes. Try it free.";
@@ -79,5 +80,13 @@ describe("generateVariant", () => {
     });
     const out = await generateVariant(COPY);
     expect(out.variant.length).toBeGreaterThan(0);
+  });
+
+  it("skips the model and uses the fallback variant when no key is set", async () => {
+    vi.mocked(hasModel).mockReturnValue(false);
+    vi.mocked(completeJSON).mockClear();
+    const out = await generateVariant(COPY);
+    expect(out).toEqual(fallbackVariant(COPY));
+    expect(vi.mocked(completeJSON)).not.toHaveBeenCalled();
   });
 });

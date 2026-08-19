@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/llm", () => ({
   complete: vi.fn(),
+  hasModel: vi.fn(() => true),
   completeJSON: vi.fn((opts, validate) => {
     // Simulate completeJSON calling complete() then validating
     const raw = { rewrite: "", why: "x" }; // simulated LLM response
@@ -12,7 +13,7 @@ vi.mock("@/lib/llm", () => ({
 }));
 
 import { rewriteVariant } from "@/lib/rewrite";
-import { completeJSON } from "@/lib/llm";
+import { completeJSON, hasModel } from "@/lib/llm";
 import type { VariantResult } from "@/lib/types";
 
 const variants: VariantResult[] = [
@@ -70,5 +71,14 @@ describe("rewriteVariant", () => {
     expect(out.rewrite).toBe(variants[1].copy);
     expect(out.why.length).toBeGreaterThan(0);
     expect(out.source).toBe("fallback");
+  });
+
+  it("skips the model and returns the best variant when no key is set", async () => {
+    vi.mocked(hasModel).mockReturnValue(false);
+    vi.mocked(completeJSON).mockClear();
+    const out = await rewriteVariant(variants);
+    expect(out.rewrite).toBe(variants[1].copy);
+    expect(out.source).toBe("fallback");
+    expect(vi.mocked(completeJSON)).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { completeJSON } from "./llm";
+import { completeJSON, hasModel } from "./llm";
 import { GOAL_BRIEF, hasContext, type Campaign } from "./campaign";
 import type { FollowerProfile, Reaction } from "./types";
 import { fallbackReactions } from "./fallback";
@@ -53,63 +53,72 @@ export async function simulateVariant(
 
   const all: Reaction[] = [];
   const seen = new Set<string>();
+  // without a model there is nothing to ask — go straight to the fallback
+  // instead of burning three failed attempts per batch
+  const model = hasModel();
 
   for (let i = 0; i < profiles.length; i += BATCH_SIZE) {
     const batch = profiles.slice(i, i + BATCH_SIZE);
-    let reactions: Reaction[];
+    let reactions: Reaction[] | undefined;
 
-    try {
-      const payload = await completeJSON<ReactionPayload[]>(
-        {
-          system: SIM_SYSTEM,
-          prompt: `${contextBlock}${goalBlock}CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
-            .map(
-              (p) =>
-                `- id: ${escapePrompt(p.id)} | ${escapePrompt(p.handle)} (${escapePrompt(
-                  p.name,
-                )}) | bio: ${escapePrompt(p.bio)} | interests: ${escapePrompt(
-                  p.interests.join(", "),
-                )} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${escapePrompt(
-                  p.objection,
-                )} | segment: ${escapePrompt(p.segment)}`,
-            )
-            .join("\n")}\n\nReply with one reaction object per follower.`,
-          tier: "fast",
-          maxTokens: 2000,
-        },
-        isReactionPayload,
-      );
-
-      // Match on the id we asked for, but accept the handle too: a model that
-      // answers with @name instead of the id is still a usable answer, and
-      // dropping it silently sends the whole batch to the fallback.
-      const byId = new Map(batch.map((p) => [p.id, p]));
-      const byHandle = new Map(batch.map((p) => [p.handle.toLowerCase(), p]));
-      reactions = payload.flatMap((r) => {
-        const key = String(r.followerId ?? "").trim();
-        const profile = byId.get(key) ?? byHandle.get(key.toLowerCase());
-        if (!profile || seen.has(profile.id)) return [];
-        seen.add(profile.id);
-        return [
+    if (model) {
+      try {
+        const payload = await completeJSON<ReactionPayload[]>(
           {
-            followerId: profile.id,
-            name: profile.name,
-            handle: profile.handle,
-            segment: profile.segment,
-            score: Math.max(0, Math.min(100, Math.round(r.score))),
-            comment: r.comment,
-            objection: r.objection,
+            system: SIM_SYSTEM,
+            prompt: `${contextBlock}${goalBlock}CREATOR'S LAUNCH COPY:\n"""\n${copy}\n"""\n\nFOLLOWERS TO SIMULATE:\n${batch
+              .map(
+                (p) =>
+                  `- id: ${escapePrompt(p.id)} | ${escapePrompt(p.handle)} (${escapePrompt(
+                    p.name,
+                  )}) | bio: ${escapePrompt(p.bio)} | interests: ${escapePrompt(
+                    p.interests.join(", "),
+                  )} | tone: ${p.tone} | engagement: ${p.engagement} | typical objection: ${escapePrompt(
+                    p.objection,
+                  )} | segment: ${escapePrompt(p.segment)}`,
+              )
+              .join("\n")}\n\nReply with one reaction object per follower.`,
+            tier: "fast",
+            maxTokens: 2000,
           },
-        ];
-      });
+          isReactionPayload,
+        );
 
-      const covered = new Set(reactions.map((r) => r.followerId));
-      const missingCount = batch.filter((p) => !covered.has(p.id)).length;
-      if (missingCount > 0) {
-        throw new Error(`LLM omitted ${missingCount} follower(s) from this batch`);
+        // Match on the id we asked for, but accept the handle too: a model that
+        // answers with @name instead of the id is still a usable answer, and
+        // dropping it silently sends the whole batch to the fallback.
+        const byId = new Map(batch.map((p) => [p.id, p]));
+        const byHandle = new Map(batch.map((p) => [p.handle.toLowerCase(), p]));
+        const matched = payload.flatMap((r) => {
+          const key = String(r.followerId ?? "").trim();
+          const profile = byId.get(key) ?? byHandle.get(key.toLowerCase());
+          if (!profile || seen.has(profile.id)) return [];
+          seen.add(profile.id);
+          return [
+            {
+              followerId: profile.id,
+              name: profile.name,
+              handle: profile.handle,
+              segment: profile.segment,
+              score: Math.max(0, Math.min(100, Math.round(r.score))),
+              comment: r.comment,
+              objection: r.objection,
+            },
+          ];
+        });
+
+        const covered = new Set(matched.map((r) => r.followerId));
+        const missingCount = batch.filter((p) => !covered.has(p.id)).length;
+        if (missingCount > 0) {
+          throw new Error(`LLM omitted ${missingCount} follower(s) from this batch`);
+        }
+        reactions = matched;
+      } catch (err) {
+        console.warn("[simulate] batch failed, falling back:", err);
       }
-    } catch (err) {
-      console.warn("[simulate] batch failed, falling back:", err);
+    }
+
+    if (reactions === undefined) {
       const missing = batch.filter((p) => !seen.has(p.id));
       reactions = fallbackReactions(missing, copy, campaign).filter((r) => {
         if (seen.has(r.followerId)) return false;
