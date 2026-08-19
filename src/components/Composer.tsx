@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { GOALS, type Campaign } from "@/lib/campaign";
 import { pickExample } from "@/lib/examples";
+import { ImportError, parseImportedAudience } from "@/lib/import-audience";
 import type { Audience } from "@/lib/types";
 import { VARIANT_COLOR } from "./Viz";
 
@@ -12,6 +13,7 @@ type Props = {
   onAudience: (a: Audience) => void;
   builtInIds: Set<string>;
   onGenerate: (icp: string) => void;
+  onImport: (audience: Audience) => void;
   campaign: Campaign;
   setCampaign: (c: Campaign) => void;
   onDeleteAudience: (id: string) => void;
@@ -58,6 +60,7 @@ export default function Composer({
   onAudience,
   builtInIds,
   onGenerate,
+  onImport,
   campaign,
   setCampaign,
   onDeleteAudience,
@@ -149,6 +152,8 @@ export default function Composer({
           stage={genStage}
           error={genError}
         />
+
+        <ImportBuilder onImport={onImport} />
       </section>
 
       <section>
@@ -382,6 +387,79 @@ function IcpBuilder({
           {stage}
         </p>
       )}
+      {error && (
+        <p className="mt-2 rounded-xl bg-pink-1/10 p-2.5 text-[12px] text-pink-1">{error}</p>
+      )}
+    </div>
+  );
+}
+
+function ImportBuilder({ onImport }: { onImport: (audience: Audience) => void }) {
+  const [open, setOpen] = useState(false);
+  const [json, setJson] = useState("");
+  const [error, setError] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 w-full rounded-2xl border border-dashed border-line px-3.5 py-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:border-blue-1 hover:text-blue-1"
+      >
+        + Import a real audience from URL
+      </button>
+    );
+  }
+
+  return (
+    <div className="field fade-up mt-2 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold text-violet-1">IMPORTED AUDIENCE</span>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            setError("");
+          }}
+          className="text-[11px] text-ink-3 hover:text-ink-1"
+        >
+          Cancel
+        </button>
+      </div>
+      <textarea
+        value={json}
+        onChange={(e) => setJson(e.target.value)}
+        rows={6}
+        placeholder="Paste the audience JSON from work/audience-*.json"
+        className="mt-2 w-full resize-y bg-transparent font-mono text-[11px] leading-relaxed outline-none placeholder:text-ink-3"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              onImport(parseImportedAudience(json));
+              setOpen(false);
+              setJson("");
+              setError("");
+            } catch (err) {
+              setError(
+                err instanceof ImportError
+                  ? err.message
+                  : "Could not import that audience.",
+              );
+            }
+          }}
+          disabled={!json.trim()}
+          className="rounded-full bg-violet-1 px-3.5 py-1.5 text-[12px] font-semibold text-white transition-opacity disabled:opacity-30"
+        >
+          Import audience
+        </button>
+      </div>
+      <p className="mt-2 font-mono text-[10px] leading-relaxed text-ink-3">
+        terminal: scripts/scrape-audience.sh --url https://… — then paste
+        work/audience-*.json
+      </p>
       {error && (
         <p className="mt-2 rounded-xl bg-pink-1/10 p-2.5 text-[12px] text-pink-1">{error}</p>
       )}

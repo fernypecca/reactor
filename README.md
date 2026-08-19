@@ -33,6 +33,23 @@ real names and handles, because these profiles get put in someone's mouth.
 This step needs `ANTHROPIC_API_KEY`; there is no deterministic stand-in for
 writing 26 distinct people, so it says so instead of faking it.
 
+You can also **clone an audience from a real page** — a community, directory,
+marketplace or blog you're about to post in. `scripts/scrape-audience.sh`
+scrapes the page with the local Orpheus scraper first (Firecrawl only as a
+fallback), has a model write followers grounded in the people, language and
+objections the page actually shows, and saves an `Audience` JSON. Import it in
+the UI (Audience → *Import a real audience from URL*) and it joins the picker
+like any generated audience:
+
+```bash
+scripts/scrape-audience.sh --url "https://…"        # writes work/audience-*.json
+```
+
+The imported JSON goes through the same sanitizers as everything else that
+reaches the simulate prompt (`src/lib/audience-schema.ts`); nothing is stored
+server-side. Requires `ANTHROPIC_API_KEY`, and the local scraper at
+`~/.claude/scripts/orpheus.sh`.
+
 ## The interface
 
 - **Audience field** — a force-directed constellation of every follower,
@@ -77,6 +94,7 @@ Hit **Skip** to dump the rest of the queue on screen at once. Under
 | `ANTHROPIC_API_KEY` | no | LLM reactions and rewrites (falls back otherwise) |
 | `ANTHROPIC_FAST_MODEL` | no | default `claude-haiku-4-5` |
 | `ANTHROPIC_SMART_MODEL` | no | default `claude-sonnet-4-5` |
+| `FIRECRAWL_API_KEY` | no | fallback scraper when Orpheus is blocked |
 
 ## Tests
 

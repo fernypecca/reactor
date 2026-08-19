@@ -333,6 +333,11 @@ export default function Home() {
     if (audienceId === id) setAudienceId(AUDIENCES[0].id);
   }
 
+  function importAudience(audience: Audience) {
+    addAudience(audience);
+    setAudienceId(audience.id);
+  }
+
   async function generateB() {
     if (!copyA.trim() || generatingB) return;
     setGeneratingB(true);
@@ -550,6 +555,7 @@ export default function Home() {
               onAudience={(a) => setAudienceId(a.id)}
               builtInIds={builtInIds}
               onGenerate={generateAudience}
+              onImport={importAudience}
               campaign={campaign}
               setCampaign={setCampaign}
               onDeleteAudience={deleteAudience}
